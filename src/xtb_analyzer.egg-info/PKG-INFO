@@ -1,0 +1,58 @@
+Metadata-Version: 2.4
+Name: xtb-analyzer
+Version: 0.1.0
+Summary: Analyze XTB portfolio from CSV cash operation exports
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pandas>=2.0
+Requires-Dist: numpy>=1.24
+Requires-Dist: yfinance>=0.2
+Requires-Dist: matplotlib>=3.7
+Requires-Dist: plotly>=5.18
+Requires-Dist: requests>=2.31
+Requires-Dist: ipykernel>=6.25
+Requires-Dist: notebook>=7.0
+Provides-Extra: dev
+Requires-Dist: pytest>=7.4; extra == "dev"
+
+# xtb_portfolio_analyzer
+
+Analyze your XTB portfolio from CSV cash-operation exports.
+
+## Setup
+
+```bash
+pip install -e ".[dev]"
+```
+
+If the full install fails on Windows (long paths), install core dependencies manually:
+
+```bash
+pip install pandas numpy yfinance matplotlib plotly requests pyarrow notebook ipykernel pytest
+pip install -e . --no-deps
+```
+
+## Usage
+
+1. Export cash operation history from XTB (CSV) for each account.
+2. Place files in `data/` (e.g. `XTB_USD_account_cs.csv`, `XTB_EURO_account_cs.csv`).
+3. Open the notebook:
+
+```bash
+jupyter notebook notebooks/portfolio_analysis.ipynb
+```
+
+4. Run all cells. Results are saved to `output/`.
+
+## Features
+
+- Parses multi-section XTB CSV exports (semicolon, European decimals)
+- Tracks positions (average cost), cash, dividends, transfers
+- Reconstructs daily portfolio NAV in PLN, USD, EUR
+- Metrics: total return, CAGR, Sharpe, Sortino, max drawdown, ATH, beta/alpha vs S&P 500
+- Sector allocation via Yahoo Finance
+- Interactive Plotly charts in Jupyter
+
+## Data privacy
+
+The `data/` and `output/` folders are gitignored. Do not commit your transaction files.
