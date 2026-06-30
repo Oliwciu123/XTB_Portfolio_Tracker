@@ -20,9 +20,14 @@ def build_sp500_deposit_benchmark(
     if not deposits or calendar.empty:
         return pd.Series(dtype=float, name=f"sp500_benchmark_{currency}")
 
-    start = calendar[0].date().isoformat()
+    first_deposit = pd.Timestamp(deposits[0].timestamp.date())
+    calendar = calendar[calendar >= first_deposit]
+    if calendar.empty:
+        return pd.Series(dtype=float, name=f"sp500_benchmark_{currency}")
+
+    start = first_deposit.date().isoformat()
     end = (calendar[-1] + pd.Timedelta(days=1)).date().isoformat()
-    sp500 = fetch_benchmark(start=start, end=end, use_cache=use_cache)
+    sp500 = fetch_benchmark(start=start, end=end, use_cache=use_cache, refresh_latest=True)
     if sp500.empty:
         return pd.Series(dtype=float, name=f"sp500_benchmark_{currency}")
 

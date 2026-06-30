@@ -34,6 +34,7 @@ def _apply_tx(state: DailyState, tx: Transaction) -> None:
 def build_nav_series(
     accounts: list[Account],
     use_cache: bool = True,
+    live_prices: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     transactions = sorted(
         (tx for account in accounts for tx in account.transactions),
@@ -43,13 +44,17 @@ def build_nav_series(
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     start = transactions[0].timestamp.date().isoformat()
-    export_dates = [account.export_date for account in accounts if account.export_date]
-    end_date = max(export_dates) if export_dates else transactions[-1].timestamp
-    end = end_date.date().isoformat()
+    end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
 
     symbols = sorted({tx.symbol for tx in transactions if tx.symbol})
-    prices = fetch_prices(symbols, start=start, end=end, use_cache=use_cache)
-    fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache)
+    prices = fetch_prices(
+        symbols,
+        start=start,
+        end=end,
+        use_cache=use_cache,
+        refresh_latest=live_prices,
+    )
+    fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache and not live_prices)
 
     if prices.empty:
         raise ValueError("No historical prices available for portfolio symbols")

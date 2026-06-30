@@ -26,6 +26,13 @@ class Deposit:
     xtb_rate: Decimal
 
 
+def first_deposit_date(accounts: list[Account]) -> pd.Timestamp | None:
+    deposits = extract_deposits(accounts)
+    if not deposits:
+        return None
+    return pd.Timestamp(deposits[0].timestamp.date())
+
+
 def extract_deposits(accounts: list[Account]) -> list[Deposit]:
     deposits: list[Deposit] = []
     for account in accounts:
@@ -91,9 +98,10 @@ def attach_deposits_to_nav(nav: pd.DataFrame, accounts: list[Account], use_cache
     if nav.empty:
         return nav
     deposits = extract_deposits(accounts)
+    end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
     fx = fetch_fx_rates(
         start=nav.index[0].date().isoformat(),
-        end=(nav.index[-1] + pd.Timedelta(days=1)).date().isoformat(),
+        end=end,
         use_cache=use_cache,
     )
     cumulative = build_cumulative_deposits(deposits, nav.index, fx)
@@ -109,32 +117,15 @@ def attach_deposits_to_nav(nav: pd.DataFrame, accounts: list[Account], use_cache
 
 
 def analyze_conversion_losses(accounts: list[Account], use_cache: bool = True) -> pd.DataFrame:
+    del use_cache  # FX rates not needed for commission-only calculation
     deposits = extract_deposits(accounts)
     if not deposits:
         return pd.DataFrame()
 
-    start = deposits[0].timestamp.date().isoformat()
-    end = (deposits[-1].timestamp + pd.Timedelta(days=1)).date().isoformat()
-    fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache)
-
     rows = []
     for deposit in deposits:
-        day = pd.Timestamp(deposit.timestamp.date())
-        fx_row = fx.loc[:day].iloc[-1] if not fx.empty else pd.Series(dtype=float)
-        nbp_col = "USDPLN" if deposit.currency == "USD" else "EURPLN"
-        nbp_rate = float(fx_row.get(nbp_col) or 0)
-        if nbp_rate <= 0:
-            continue
-
         pln_spent = float(deposit.pln_spent)
-        foreign_received = float(deposit.amount_foreign)
-        fair_foreign_at_mid = pln_spent / nbp_rate
-        fair_foreign_after_fee = pln_spent * float(1 - CONVERSION_FEE_RATE) / nbp_rate
-
-        spread_loss_foreign = max(0.0, fair_foreign_at_mid - foreign_received)
         commission_loss_pln = pln_spent * float(CONVERSION_FEE_RATE)
-        spread_loss_pln = spread_loss_foreign * nbp_rate
-        total_loss_pln = commission_loss_pln + spread_loss_pln
 
         rows.append(
             {
@@ -142,14 +133,10 @@ def analyze_conversion_losses(accounts: list[Account], use_cache: bool = True) -
                 "account_id": deposit.account_id,
                 "to_currency": deposit.currency,
                 "pln_spent": pln_spent,
-                "foreign_received": foreign_received,
+                "foreign_received": float(deposit.amount_foreign),
                 "xtb_rate": float(deposit.xtb_rate),
-                "nbp_rate": nbp_rate,
-                "fair_foreign_at_mid": fair_foreign_at_mid,
-                "fair_foreign_after_fee": fair_foreign_after_fee,
                 "commission_loss_pln": commission_loss_pln,
-                "spread_loss_pln": spread_loss_pln,
-                "total_loss_pln": total_loss_pln,
+                "total_loss_pln": commission_loss_pln,
             }
         )
 
@@ -164,7 +151,6 @@ def conversion_summary(losses: pd.DataFrame) -> dict[str, float]:
         return {
             "total_pln_converted": 0.0,
             "total_commission_pln": 0.0,
-            "total_spread_pln": 0.0,
             "total_loss_pln": 0.0,
             "avg_loss_pct": 0.0,
         }
@@ -173,7 +159,6 @@ def conversion_summary(losses: pd.DataFrame) -> dict[str, float]:
     return {
         "total_pln_converted": total_pln,
         "total_commission_pln": float(losses["commission_loss_pln"].sum()),
-        "total_spread_pln": float(losses["spread_loss_pln"].sum()),
         "total_loss_pln": total_loss,
         "avg_loss_pct": total_loss / total_pln if total_pln else 0.0,
     }

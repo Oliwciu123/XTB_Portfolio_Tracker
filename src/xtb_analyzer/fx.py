@@ -38,11 +38,13 @@ def _yahoo_fx_series(pair: str, start: str, end: str | None = None) -> pd.Series
 def fetch_fx_rates(start: str, end: str | None = None, use_cache: bool = True) -> pd.DataFrame:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = CACHE_DIR / "fx_rates.parquet"
+    end = end or (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
 
     if use_cache and cache_file.exists():
         cached = pd.read_parquet(cache_file)
         cached.index = pd.to_datetime(cached.index)
-        if cached.index.min() <= pd.Timestamp(start):
+        needs_refresh = cached.index.max().date() < pd.Timestamp(end).date() - pd.Timedelta(days=2)
+        if cached.index.min() <= pd.Timestamp(start) and not needs_refresh:
             return cached.loc[start:end] if end else cached.loc[start:]
 
     try:

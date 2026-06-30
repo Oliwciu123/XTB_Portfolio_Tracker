@@ -4,6 +4,8 @@ Analyze your XTB portfolio from CSV cash-operation exports.
 
 ## Setup
 
+From the project root:
+
 ```bash
 pip install -e ".[dev]"
 ```
@@ -13,6 +15,21 @@ If the full install fails on Windows (long paths), install core dependencies man
 ```bash
 pip install pandas numpy yfinance matplotlib plotly requests pyarrow notebook ipykernel pytest
 pip install -e . --no-deps
+```
+
+### Notebook in Cursor / VS Code
+
+1. Run `pip install -e ".[dev]"` from the project root.
+2. Select the **same Python interpreter** that received the install (Command Palette → *Python: Select Interpreter*).
+3. Open `notebooks/portfolio_analysis.ipynb` and **restart the kernel**.
+4. Run all cells.
+
+The notebook also bootstraps `src/` on `sys.path`, so it works without a formal install during local development. For tests and CLI usage, prefer the editable install.
+
+Verify the package is available:
+
+```bash
+python -c "import xtb_analyzer; print(xtb_analyzer.__file__)"
 ```
 
 ## Usage
@@ -31,12 +48,12 @@ jupyter notebook notebooks/portfolio_analysis.ipynb
 
 - Parses multi-section XTB CSV exports (semicolon, European decimals)
 - Tracks positions (average cost), cash, dividends, transfers
-- Reconstructs daily portfolio NAV in PLN, USD, EUR
+- Reconstructs daily portfolio NAV in PLN, USD, EUR **through today** using live Yahoo Finance prices
 - Metrics: total return, CAGR, Sharpe, Sortino, max drawdown, ATH, beta/alpha vs S&P 500
-- **Deposit-matched S&P 500 benchmark** (buy index at each deposit time)
-- **FX conversion cost analysis** (0.5% XTB fee + spread vs NBP)
-- Sector allocation via Yahoo Finance
-- Clear Plotly charts: deposit step-line, return gauge, benchmark comparison
+- **Deposit-matched S&P 500 Total Return benchmark** (SP500TR, buy index at each deposit time)
+- **FX conversion cost** — XTB 0.5% commission on PLN → USD/EUR conversions
+- Sector allocation pie chart via Yahoo Finance
+- Dark-theme Plotly charts: return gauge, NAV vs deposits, benchmark comparison, sector pie
 
 ## Data privacy
 

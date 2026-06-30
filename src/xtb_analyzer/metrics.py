@@ -16,7 +16,6 @@ from xtb_analyzer.prices import fetch_benchmark
 @dataclass
 class PerformanceMetrics:
     total_return: float
-    cagr: float
     volatility: float
     sharpe: float
     sortino: float
@@ -28,28 +27,40 @@ class PerformanceMetrics:
     beta: float | None
     alpha: float | None
     benchmark_total_return: float | None
+    total_deposits: float
+    current_nav: float
+    gain: float
 
 
-def _daily_returns(nav: pd.Series) -> pd.Series:
-    return nav.pct_change().dropna()
+def _daily_returns(series: pd.Series) -> pd.Series:
+    return series.pct_change().dropna()
 
 
-def _cagr(nav: pd.Series) -> float:
-    if len(nav) < 2 or nav.iloc[0] <= 0:
-        return 0.0
-    years = (nav.index[-1] - nav.index[0]).days / 365.25
-    if years <= 0:
-        return 0.0
-    return float((nav.iloc[-1] / nav.iloc[0]) ** (1 / years) - 1)
+def _return_on_capital(nav: pd.DataFrame, currency: str) -> pd.Series:
+    currency = currency.lower()
+    nav_col = f"nav_{currency}"
+    dep_col = f"deposits_{currency}"
+    invested = nav[dep_col].replace(0, pd.NA)
+    return nav[nav_col] / invested - 1
 
 
-def _max_drawdown(nav: pd.Series) -> tuple[float, pd.Timestamp | None, pd.Timestamp | None]:
-    rolling_max = nav.cummax()
-    drawdown = nav / rolling_max - 1
-    if drawdown.empty:
+def _first_investment_date(nav: pd.DataFrame, currency: str) -> pd.Timestamp | None:
+    dep_col = f"deposits_{currency.lower()}"
+    active = nav[dep_col] > 0
+    if not active.any():
+        return nav.index[0] if len(nav) else None
+    return nav.index[active][0]
+
+
+def _max_drawdown_on_capital(nav: pd.DataFrame, currency: str) -> tuple[float, pd.Timestamp | None, pd.Timestamp | None]:
+    roc = _return_on_capital(nav, currency).dropna()
+    if roc.empty:
         return 0.0, None, None
+    wealth = 1 + roc
+    rolling_max = wealth.cummax()
+    drawdown = wealth / rolling_max - 1
     end = drawdown.idxmin()
-    start = nav.loc[:end].idxmax()
+    start = wealth.loc[:end].idxmax()
     return float(drawdown.min()), start, end
 
 
@@ -82,20 +93,57 @@ def _beta_alpha(portfolio_returns: pd.Series, benchmark_returns: pd.Series) -> t
     return float(beta), float(alpha)
 
 
+def portfolio_snapshot(nav: pd.DataFrame, currency: str = "pln") -> dict[str, object]:
+    currency = currency.lower()
+    nav_col = f"nav_{currency}"
+    dep_col = f"deposits_{currency}"
+    return_col = f"return_{currency}"
+    gain_col = f"gain_{currency}"
+
+    as_of = nav.index[-1]
+    current_nav = round(float(nav[nav_col].iloc[-1]), 2)
+    total_deposits = round(float(nav[dep_col].iloc[-1]), 2)
+    gain = round(float(nav[gain_col].iloc[-1]), 2) if gain_col in nav.columns else round(current_nav - total_deposits, 2)
+    total_return = round(float(nav[return_col].iloc[-1]), 4) if return_col in nav.columns else 0.0
+
+    return {
+        "as_of": as_of.strftime("%Y-%m-%d"),
+        "currency": currency.upper(),
+        "current_nav": current_nav,
+        "total_deposits": total_deposits,
+        "gain": gain,
+        "return_on_capital": total_return,
+    }
+
+
 def compute_metrics(nav: pd.DataFrame, currency: str = "usd", use_cache: bool = True) -> PerformanceMetrics:
-    col = f"nav_{currency.lower()}"
+    currency = currency.lower()
+    col = f"nav_{currency}"
+    dep_col = f"deposits_{currency}"
     series = nav[col].dropna()
-    returns = _daily_returns(series)
-    mdd, mdd_start, mdd_end = _max_drawdown(series)
+
+    if dep_col not in nav.columns:
+        raise ValueError("NAV must include deposit columns. Run attach_deposits_to_nav() first.")
+
+    roc = _return_on_capital(nav, currency).dropna()
+    returns = _daily_returns(roc)
+    mdd, mdd_start, mdd_end = _max_drawdown_on_capital(nav, currency)
     ath = float(series.max())
     benchmark_return = None
     beta = alpha = None
 
+    invested = float(nav[dep_col].iloc[-1])
+    current_nav = float(series.iloc[-1])
+    total_return = float(current_nav / invested - 1) if invested > 0 else 0.0
+    gain = current_nav - invested
+
     if not series.empty:
+        start = _first_investment_date(nav, currency) or series.index[0]
         benchmark = fetch_benchmark(
-            start=series.index[0].date().isoformat(),
+            start=start.date().isoformat(),
             end=(series.index[-1] + pd.Timedelta(days=1)).date().isoformat(),
             use_cache=use_cache,
+            refresh_latest=True,
         )
         if not benchmark.empty:
             bench_aligned = benchmark.reindex(series.index, method="ffill").dropna()
@@ -104,8 +152,7 @@ def compute_metrics(nav: pd.DataFrame, currency: str = "usd", use_cache: bool = 
             benchmark_return = float(bench_aligned.iloc[-1] / bench_aligned.iloc[0] - 1)
 
     return PerformanceMetrics(
-        total_return=float(series.iloc[-1] / series.iloc[0] - 1) if len(series) > 1 else 0.0,
-        cagr=_cagr(series),
+        total_return=total_return,
         volatility=float(returns.std() * np.sqrt(252)) if not returns.empty else 0.0,
         sharpe=_sharpe(returns),
         sortino=_sortino(returns),
@@ -117,18 +164,19 @@ def compute_metrics(nav: pd.DataFrame, currency: str = "usd", use_cache: bool = 
         beta=beta,
         alpha=alpha,
         benchmark_total_return=benchmark_return,
+        total_deposits=invested,
+        current_nav=current_nav,
+        gain=gain,
     )
 
 
 def drawdown_series(nav: pd.DataFrame, currency: str = "usd") -> pd.Series:
-    col = f"nav_{currency.lower()}"
-    series = nav[col].dropna()
-    return series / series.cummax() - 1
+    return _return_on_capital(nav, currency).dropna()
 
 
 def rolling_volatility(nav: pd.DataFrame, currency: str = "usd", window: int = 21) -> pd.Series:
-    col = f"nav_{currency.lower()}"
-    return _daily_returns(nav[col]).rolling(window).std() * np.sqrt(252)
+    roc = _return_on_capital(nav, currency)
+    return _daily_returns(roc).rolling(window).std() * np.sqrt(252)
 
 
 def realized_pnl_summary(accounts: list[Account]) -> pd.DataFrame:
@@ -158,6 +206,110 @@ def realized_pnl_summary(accounts: list[Account]) -> pd.DataFrame:
         .sort_values("total_realized_pnl", ascending=False)
     )
     return summary
+
+
+def _fmt_pct(value: float | None) -> str:
+    if value is None:
+        return "—"
+    return f"{value:+.2%}".replace(".", ",")
+
+
+def _fmt_num(value: float | None, decimals: int = 2) -> str:
+    if value is None:
+        return "—"
+    return f"{value:,.{decimals}f}".replace(",", " ").replace(".", ",")
+
+
+def format_metrics_table(metrics: PerformanceMetrics, currency: str = "pln") -> pd.DataFrame:
+    currency = currency.upper()
+    rows = [
+        ("Aktualna wartość portfela", f"{_fmt_num(metrics.current_nav)} {currency}"),
+        ("Suma wpłat", f"{_fmt_num(metrics.total_deposits)} {currency}"),
+        ("Zysk / strata", f"{_fmt_num(metrics.gain)} {currency}"),
+        (
+            "Zwrot na wpłaconym kapitale",
+            f"{_fmt_pct(metrics.total_return)}  (wartość ÷ wpłaty − 1)",
+        ),
+        ("Zmienność (roczna)", _fmt_pct(metrics.volatility)),
+        ("Współczynnik Sharpe'a", _fmt_num(metrics.sharpe)),
+        ("Współczynnik Sortino", _fmt_num(metrics.sortino)),
+        ("Maks. obsunięcie (drawdown)", _fmt_pct(metrics.max_drawdown)),
+        ("Szczyt wartości portfela (ATH)", f"{_fmt_num(metrics.ath)} {currency}"),
+        ("Odległość od ATH", _fmt_pct(metrics.pct_from_ath)),
+        ("Beta vs S&P 500", _fmt_num(metrics.beta)),
+        ("Alfa vs S&P 500", _fmt_num(metrics.alpha)),
+        ("Zwrot benchmarku (S&P 500 TR)", _fmt_pct(metrics.benchmark_total_return)),
+    ]
+    if metrics.max_drawdown_start and metrics.max_drawdown_end:
+        rows.append(
+            (
+                "Okres maks. drawdownu",
+                f"{metrics.max_drawdown_start} → {metrics.max_drawdown_end}",
+            )
+        )
+    return pd.DataFrame(rows, columns=["Metryka", "Wartość"])
+
+
+def format_positions_table(positions: pd.DataFrame) -> pd.DataFrame:
+    if positions.empty:
+        return positions
+    frame = positions.sort_values("market_value_pln", ascending=False).copy()
+    numeric_cols = [
+        "shares",
+        "avg_cost",
+        "market_price",
+        "cost_basis",
+        "market_value",
+        "unrealized_pnl",
+        "market_value_pln",
+        "market_value_usd",
+        "market_value_eur",
+        "weight",
+    ]
+    for col in numeric_cols:
+        if col in frame.columns:
+            frame[col] = frame[col].round(2)
+    frame = frame.rename(
+        columns={
+            "account_id": "Konto",
+            "symbol": "Symbol",
+            "currency": "Waluta",
+            "shares": "Liczba akcji",
+            "avg_cost": "Śr. cena zakupu",
+            "market_price": "Aktualna cena",
+            "cost_basis": "Koszt nabycia",
+            "market_value": "Wartość rynkowa",
+            "unrealized_pnl": "Niezrealizowany P&L",
+            "market_value_pln": "Wartość PLN",
+            "market_value_usd": "Wartość USD",
+            "market_value_eur": "Wartość EUR",
+            "weight": "Udział",
+            "sector": "Sektor",
+            "industry": "Branża",
+        }
+    )
+    if "Udział" in frame.columns:
+        frame["Udział"] = (frame["Udział"] * 100).round(2)
+    return frame
+
+
+def format_realized_pnl_table(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return pd.DataFrame(columns=["Symbol", "Transakcje", "Zrealizowany P&L", "Średni P&L", "Win rate"])
+    frame = summary.copy()
+    frame = frame.rename(
+        columns={
+            "symbol": "Symbol",
+            "trades": "Transakcje",
+            "total_realized_pnl": "Zrealizowany P&L",
+            "avg_realized_pnl": "Średni P&L",
+            "win_rate": "Win rate",
+        }
+    )
+    frame["Win rate"] = (frame["Win rate"] * 100).round(2)
+    frame["Zrealizowany P&L"] = frame["Zrealizowany P&L"].round(2)
+    frame["Średni P&L"] = frame["Średni P&L"].round(2)
+    return frame
 
 
 def build_report(
