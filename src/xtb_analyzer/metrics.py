@@ -10,6 +10,7 @@ import pandas as pd
 from xtb_analyzer.cash import build_cash_ledger, cash_summary
 from xtb_analyzer.flows import analyze_conversion_losses, conversion_summary
 from xtb_analyzer.models import Account
+from xtb_analyzer.benchmark import NASDAQ100_TR_TICKER, SP500_TR_TICKER
 from xtb_analyzer.prices import fetch_benchmark
 
 
@@ -27,6 +28,9 @@ class PerformanceMetrics:
     beta: float | None
     alpha: float | None
     benchmark_total_return: float | None
+    nasdaq100_beta: float | None
+    nasdaq100_alpha: float | None
+    nasdaq100_benchmark_total_return: float | None
     total_deposits: float
     current_nav: float
     gain: float
@@ -93,6 +97,35 @@ def _beta_alpha(portfolio_returns: pd.Series, benchmark_returns: pd.Series) -> t
     return float(beta), float(alpha)
 
 
+def _benchmark_stats(
+    series: pd.Series,
+    returns: pd.Series,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    ticker: str,
+    use_cache: bool,
+    refresh_latest: bool,
+) -> tuple[float | None, float | None, float | None]:
+    benchmark = fetch_benchmark(
+        start=start.date().isoformat(),
+        end=(end + pd.Timedelta(days=1)).date().isoformat(),
+        ticker=ticker,
+        use_cache=use_cache,
+        refresh_latest=refresh_latest,
+    )
+    if benchmark.empty:
+        return None, None, None
+
+    bench_aligned = benchmark.reindex(series.index, method="ffill").dropna()
+    if bench_aligned.empty:
+        return None, None, None
+
+    bench_returns = _daily_returns(bench_aligned)
+    beta, alpha = _beta_alpha(returns, bench_returns)
+    benchmark_return = float(bench_aligned.iloc[-1] / bench_aligned.iloc[0] - 1)
+    return beta, alpha, benchmark_return
+
+
 def portfolio_snapshot(nav: pd.DataFrame, currency: str = "pln") -> dict[str, object]:
     currency = currency.lower()
     nav_col = f"nav_{currency}"
@@ -116,7 +149,12 @@ def portfolio_snapshot(nav: pd.DataFrame, currency: str = "pln") -> dict[str, ob
     }
 
 
-def compute_metrics(nav: pd.DataFrame, currency: str = "usd", use_cache: bool = True) -> PerformanceMetrics:
+def compute_metrics(
+    nav: pd.DataFrame,
+    currency: str = "usd",
+    use_cache: bool = True,
+    refresh_latest: bool = True,
+) -> PerformanceMetrics:
     currency = currency.lower()
     col = f"nav_{currency}"
     dep_col = f"deposits_{currency}"
@@ -131,6 +169,8 @@ def compute_metrics(nav: pd.DataFrame, currency: str = "usd", use_cache: bool = 
     ath = float(series.max())
     benchmark_return = None
     beta = alpha = None
+    nasdaq100_beta = nasdaq100_alpha = None
+    nasdaq100_benchmark_return = None
 
     invested = float(nav[dep_col].iloc[-1])
     current_nav = float(series.iloc[-1])
@@ -139,17 +179,13 @@ def compute_metrics(nav: pd.DataFrame, currency: str = "usd", use_cache: bool = 
 
     if not series.empty:
         start = _first_investment_date(nav, currency) or series.index[0]
-        benchmark = fetch_benchmark(
-            start=start.date().isoformat(),
-            end=(series.index[-1] + pd.Timedelta(days=1)).date().isoformat(),
-            use_cache=use_cache,
-            refresh_latest=True,
+        end = series.index[-1]
+        beta, alpha, benchmark_return = _benchmark_stats(
+            series, returns, start, end, SP500_TR_TICKER, use_cache, refresh_latest
         )
-        if not benchmark.empty:
-            bench_aligned = benchmark.reindex(series.index, method="ffill").dropna()
-            bench_returns = _daily_returns(bench_aligned)
-            beta, alpha = _beta_alpha(returns, bench_returns)
-            benchmark_return = float(bench_aligned.iloc[-1] / bench_aligned.iloc[0] - 1)
+        nasdaq100_beta, nasdaq100_alpha, nasdaq100_benchmark_return = _benchmark_stats(
+            series, returns, start, end, NASDAQ100_TR_TICKER, use_cache, refresh_latest
+        )
 
     return PerformanceMetrics(
         total_return=total_return,
@@ -164,6 +200,9 @@ def compute_metrics(nav: pd.DataFrame, currency: str = "usd", use_cache: bool = 
         beta=beta,
         alpha=alpha,
         benchmark_total_return=benchmark_return,
+        nasdaq100_beta=nasdaq100_beta,
+        nasdaq100_alpha=nasdaq100_alpha,
+        nasdaq100_benchmark_total_return=nasdaq100_benchmark_return,
         total_deposits=invested,
         current_nav=current_nav,
         gain=gain,
@@ -239,6 +278,9 @@ def format_metrics_table(metrics: PerformanceMetrics, currency: str = "pln") -> 
         ("Beta vs S&P 500", _fmt_num(metrics.beta)),
         ("Alfa vs S&P 500", _fmt_num(metrics.alpha)),
         ("Zwrot benchmarku (S&P 500 TR)", _fmt_pct(metrics.benchmark_total_return)),
+        ("Beta vs NASDAQ 100", _fmt_num(metrics.nasdaq100_beta)),
+        ("Alfa vs NASDAQ 100", _fmt_num(metrics.nasdaq100_alpha)),
+        ("Zwrot benchmarku (NASDAQ 100 TR)", _fmt_pct(metrics.nasdaq100_benchmark_total_return)),
     ]
     if metrics.max_drawdown_start and metrics.max_drawdown_end:
         rows.append(

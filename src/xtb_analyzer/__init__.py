@@ -1,13 +1,21 @@
 """XTB portfolio analyzer."""
 
-from xtb_analyzer.benchmark import build_sp500_deposit_benchmark
+from xtb_analyzer.benchmark import (
+    build_deposit_benchmarks,
+    build_nasdaq100_deposit_benchmark,
+    build_sp500_deposit_benchmark,
+)
 from xtb_analyzer.charts import (
     PLOTLY_SHOW_CONFIG,
+    ReturnComparisonData,
+    build_return_comparison_figure,
     plot_benchmark_comparison,
     plot_conversion_losses,
     plot_nav_with_deposits,
     plot_return_dashboard,
     plot_sector_allocation,
+    prepare_return_comparison_data,
+    show_return_comparison_widget,
 )
 from xtb_analyzer.flows import (
     analyze_conversion_losses,
@@ -25,7 +33,11 @@ __all__ = [
     "Transaction",
     "analyze_conversion_losses",
     "attach_deposits_to_nav",
+    "build_deposit_benchmarks",
+    "build_nasdaq100_deposit_benchmark",
+    "build_return_comparison_figure",
     "build_sp500_deposit_benchmark",
+    "ReturnComparisonData",
     "conversion_summary",
     "extract_deposits",
     "format_metrics_table",
@@ -39,4 +51,5 @@ __all__ = [
     "plot_nav_with_deposits",
     "plot_return_dashboard",
     "plot_sector_allocation",
+    "show_return_comparison_widget",
 ]

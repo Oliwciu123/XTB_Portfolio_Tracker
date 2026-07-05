@@ -26,24 +26,57 @@ def _default_end(end: str | None) -> str:
     return (date.today() + timedelta(days=1)).isoformat()
 
 
-def _download_close(ticker: str, start: str, end: str | None) -> pd.Series:
-    data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+def _normalize_index(series: pd.Series) -> pd.Series:
+    series = series.copy()
+    series.index = pd.to_datetime(series.index).tz_localize(None)
+    return series.sort_index().ffill()
+
+
+def _extract_close(data: pd.DataFrame, ticker: str) -> pd.Series:
     if data.empty:
         return pd.Series(dtype=float, name=ticker)
 
     if isinstance(data.columns, pd.MultiIndex):
         if ("Close", ticker) in data.columns:
             series = data[("Close", ticker)]
+        elif "Close" in data.columns.get_level_values(0):
+            close = data["Close"]
+            if isinstance(close, pd.DataFrame) and ticker in close.columns:
+                series = close[ticker]
+            else:
+                series = close.iloc[:, 0]
         else:
-            series = data["Close"].iloc[:, 0] if isinstance(data["Close"], pd.DataFrame) else data["Close"]
+            series = data.iloc[:, 0]
     elif "Close" in data.columns:
         series = data["Close"]
     else:
         series = data.iloc[:, 0]
 
-    series = series.copy()
-    series.index = pd.to_datetime(series.index).tz_localize(None)
-    return series.sort_index().ffill().rename(ticker)
+    return _normalize_index(series).rename(ticker)
+
+
+def _download_close(ticker: str, start: str, end: str) -> pd.Series:
+    data = yf.download(ticker, start=start, end=end, progress=False, auto_adjust=True)
+    return _extract_close(data, ticker)
+
+
+def _download_close_batch(tickers: list[str], start: str, end: str) -> dict[str, pd.Series]:
+    if not tickers:
+        return {}
+    if len(tickers) == 1:
+        ticker = tickers[0]
+        return {ticker: _download_close(ticker, start, end)}
+
+    data = yf.download(
+        tickers,
+        start=start,
+        end=end,
+        progress=False,
+        auto_adjust=True,
+        group_by="column",
+        threads=True,
+    )
+    return {ticker: _extract_close(data, ticker) for ticker in tickers}
 
 
 def _load_cached_series(cache_file: Path) -> pd.Series | None:
@@ -68,27 +101,78 @@ def _merge_price_series(cached: pd.Series | None, fresh: pd.Series, start: str) 
     return merged.loc[pd.Timestamp(start) :]
 
 
-def _resolve_series(
-    ticker: str,
+def _needs_refresh(cached: pd.Series | None, refresh_latest: bool) -> bool:
+    if cached is None or cached.empty:
+        return True
+    return refresh_latest
+
+
+def _fetch_live_prices(tickers: list[str]) -> dict[str, float]:
+    live: dict[str, float] = {}
+    for ticker in tickers:
+        try:
+            fast = yf.Ticker(ticker).fast_info
+            price = getattr(fast, "last_price", None) or getattr(fast, "regular_market_price", None)
+            if price and float(price) > 0:
+                live[ticker] = float(price)
+        except Exception:
+            continue
+    return live
+
+
+def _apply_live_quote(series: pd.Series, price: float) -> pd.Series:
+    if series.empty or price <= 0:
+        return series
+    updated = series.copy()
+    today = pd.Timestamp.today().normalize()
+    if today > updated.index.max():
+        updated.loc[today] = price
+    else:
+        updated.iloc[-1] = price
+    return updated.sort_index()
+
+
+def _resolve_tickers(
+    tickers: list[str],
     start: str,
     end: str,
     use_cache: bool,
     refresh_latest: bool,
-) -> pd.Series:
-    cache_file = _cache_path(ticker)
-    cached = _load_cached_series(cache_file) if use_cache else None
+) -> dict[str, pd.Series]:
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    resolved: dict[str, pd.Series] = {}
+    pending: list[tuple[str, str, pd.Series | None]] = []
 
-    if refresh_latest or cached is None or cached.empty:
-        fetch_start = start
-        if cached is not None and not cached.empty:
-            fetch_start = (cached.index.max() - pd.Timedelta(days=7)).date().isoformat()
-        series = _merge_price_series(cached, _download_close(ticker, fetch_start, end), start)
-    else:
-        series = cached.loc[pd.Timestamp(start) :]
+    for ticker in tickers:
+        cache_file = _cache_path(ticker)
+        cached = _load_cached_series(cache_file) if use_cache else None
+        if _needs_refresh(cached, refresh_latest):
+            fetch_start = start
+            if cached is not None and not cached.empty:
+                fetch_start = (cached.index.max() - pd.Timedelta(days=7)).date().isoformat()
+            pending.append((ticker, fetch_start, cached))
+        else:
+            resolved[ticker] = cached.loc[pd.Timestamp(start) :]  # type: ignore[union-attr]
 
-    if not series.empty:
-        series.to_frame("close").to_parquet(cache_file)
-    return series
+    if pending:
+        batch_start = min(item[1] for item in pending)
+        batch_tickers = [item[0] for item in pending]
+        fresh_map = _download_close_batch(batch_tickers, batch_start, end)
+        for ticker, _, cached in pending:
+            fresh = fresh_map.get(ticker, pd.Series(dtype=float))
+            series = _merge_price_series(cached, fresh, start)
+            if not series.empty and use_cache:
+                series.to_frame("close").to_parquet(_cache_path(ticker))
+            if not series.empty:
+                resolved[ticker] = series
+
+    if refresh_latest and resolved:
+        live_prices = _fetch_live_prices(list(resolved.keys()))
+        for ticker, series in resolved.items():
+            if ticker in live_prices:
+                resolved[ticker] = _apply_live_quote(series, live_prices[ticker])
+
+    return resolved
 
 
 def fetch_prices(
@@ -96,16 +180,15 @@ def fetch_prices(
     start: str,
     end: str | None = None,
     use_cache: bool = True,
-    refresh_latest: bool = True,
+    refresh_latest: bool = False,
 ) -> pd.DataFrame:
-    CACHE_DIR.mkdir(parents=True, exist_ok=True)
     end = _default_end(end)
     tickers = sorted({xtb_to_yahoo(symbol) for symbol in symbols})
     reverse_map = {xtb_to_yahoo(sym): sym for sym in symbols}
-    frames: list[pd.Series] = []
+    resolved = _resolve_tickers(tickers, start, end, use_cache, refresh_latest)
 
-    for ticker in tickers:
-        series = _resolve_series(ticker, start, end, use_cache, refresh_latest)
+    frames: list[pd.Series] = []
+    for ticker, series in resolved.items():
         if series.empty:
             continue
         xtb_symbol = reverse_map.get(ticker, ticker)
@@ -114,8 +197,7 @@ def fetch_prices(
     if not frames:
         return pd.DataFrame()
 
-    prices = pd.concat(frames, axis=1).sort_index()
-    return prices.ffill()
+    return pd.concat(frames, axis=1).sort_index().ffill()
 
 
 def fetch_benchmark(
@@ -123,7 +205,7 @@ def fetch_benchmark(
     end: str | None = None,
     ticker: str = "^SP500TR",
     use_cache: bool = True,
-    refresh_latest: bool = True,
+    refresh_latest: bool = False,
 ) -> pd.Series:
     frame = fetch_prices(
         [ticker],
@@ -135,3 +217,14 @@ def fetch_benchmark(
     if frame.empty:
         return pd.Series(dtype=float)
     return frame.iloc[:, 0].rename("benchmark")
+
+
+def fetch_benchmarks(
+    tickers: list[str],
+    start: str,
+    end: str | None = None,
+    use_cache: bool = True,
+    refresh_latest: bool = False,
+) -> dict[str, pd.Series]:
+    end = _default_end(end)
+    return _resolve_tickers(sorted(set(tickers)), start, end, use_cache, refresh_latest)

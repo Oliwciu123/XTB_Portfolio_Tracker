@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -8,6 +10,7 @@ CHART_COLORS = {
     "nav": "#22c55e",
     "deposits": "#94a3b8",
     "benchmark": "#3b82f6",
+    "benchmark_alt": "#a855f7",
     "gain": "#22c55e",
     "loss": "#ef4444",
     "grid": "#404040",
@@ -56,7 +59,13 @@ def _currency_label(currency: str) -> str:
 
 
 def _polish_decimal(value: float, decimals: int = 2) -> str:
+    if value is None or pd.isna(value):
+        return "—"
     return f"{value:,.{decimals}f}".replace(",", " ").replace(".", ",")
+
+
+def _to_datetime_list(index: pd.Index) -> list:
+    return [pd.Timestamp(ts).to_pydatetime() for ts in pd.to_datetime(index)]
 
 
 def _apply_axis_style(fig: go.Figure, max_ticks: int = 12) -> go.Figure:
@@ -78,40 +87,304 @@ def _slice_from_first_deposit(nav: pd.DataFrame, dep_col: str) -> pd.DataFrame:
     return nav.loc[nav.index[active][0] :]
 
 
-def _monthly_returns_from_first_deposit(
+def _monthly_return_comparison_data(
     nav: pd.DataFrame,
-    benchmark: pd.Series,
+    benchmarks: dict[str, pd.Series],
     currency: str,
-) -> tuple[pd.Series, pd.Series, float, float, pd.Timestamp]:
-    """Return rebased monthly series (day 1 = 0%) and raw final returns for labels."""
+) -> tuple[pd.Series, dict[str, pd.Series], dict[str, float], float, pd.Timestamp]:
+    """Rebased monthly return series (day 1 = 0%) and final % for legend labels."""
     currency = currency.lower()
     nav_col = f"nav_{currency}"
     dep_col = f"deposits_{currency}"
 
     view = _slice_from_first_deposit(nav, dep_col)
     first_day = view.index[0]
-    benchmark_aligned = benchmark.reindex(view.index, method="ffill")
 
     portfolio_return = (view[nav_col] / view[dep_col].replace(0, pd.NA) - 1) * 100
-    benchmark_return = (benchmark_aligned / view[dep_col].replace(0, pd.NA) - 1) * 100
-
     final_portfolio = float(portfolio_return.iloc[-1])
-    final_benchmark = float(benchmark_return.iloc[-1])
 
-    rebased = pd.DataFrame(
-        {
-            "portfolio": portfolio_return - portfolio_return.iloc[0],
-            "benchmark": benchmark_return - benchmark_return.iloc[0],
-        }
-    )
+    rebased_columns: dict[str, pd.Series] = {
+        "portfolio": portfolio_return - portfolio_return.iloc[0],
+    }
+    final_returns: dict[str, float] = {}
+
+    for key, benchmark in benchmarks.items():
+        benchmark_aligned = benchmark.reindex(view.index, method="ffill")
+        if benchmark_aligned.isna().all():
+            final_returns[key] = float("nan")
+            rebased_columns[key] = portfolio_return * 0
+            continue
+        benchmark_return = (benchmark_aligned / view[dep_col].replace(0, pd.NA) - 1) * 100
+        final_returns[key] = float(benchmark_return.iloc[-1])
+        rebased_columns[key] = benchmark_return - benchmark_return.iloc[0]
+
+    rebased = pd.DataFrame(rebased_columns)
     monthly = rebased.resample("ME").last()
     monthly = monthly[monthly.index > first_day]
 
-    start_row = pd.DataFrame({"portfolio": [0.0], "benchmark": [0.0]}, index=[first_day])
+    start_row = pd.DataFrame({col: [0.0] for col in rebased.columns}, index=[first_day])
     monthly = pd.concat([start_row, monthly]).sort_index()
     monthly = monthly[~monthly.index.duplicated(keep="first")]
 
-    return monthly["portfolio"], monthly["benchmark"], final_portfolio, final_benchmark, first_day
+    benchmarks_monthly = {key: monthly[key] for key in benchmarks}
+    return monthly["portfolio"], benchmarks_monthly, final_returns, final_portfolio, first_day
+
+
+def _monthly_returns_from_first_deposit(
+    nav: pd.DataFrame,
+    benchmark: pd.Series,
+    currency: str,
+) -> tuple[pd.Series, pd.Series, float, float, pd.Timestamp]:
+    portfolio_monthly, benchmarks_monthly, final_returns, final_portfolio, first_day = (
+        _monthly_return_comparison_data(nav, {"benchmark": benchmark}, currency)
+    )
+    return (
+        portfolio_monthly,
+        benchmarks_monthly["benchmark"],
+        final_portfolio,
+        final_returns["benchmark"],
+        first_day,
+    )
+
+
+BENCHMARK_META = {
+    "sp500": ("S&P 500 TR", CHART_COLORS["benchmark"]),
+    "nasdaq100": ("NASDAQ 100", CHART_COLORS["benchmark_alt"]),
+}
+
+RETURN_CHART_LAYOUT = {
+    **CHART_LAYOUT,
+    "height": 560,
+    "width": 920,
+    "margin": dict(l=56, r=24, t=96, b=88),
+    "legend": dict(
+        orientation="h",
+        yanchor="bottom",
+        y=1.02,
+        xanchor="left",
+        x=0,
+        bgcolor="rgba(0,0,0,0)",
+        font=dict(size=12),
+    ),
+}
+
+HOVER_RETURN = "%{x|%b %Y}<br><b>%{y:.1f}%</b><extra></extra>"
+
+
+@dataclass
+class ReturnComparisonData:
+    portfolio_monthly: pd.Series
+    benchmarks_monthly: dict[str, pd.Series]
+    final_returns: dict[str, float]
+    final_portfolio: float
+    first_day: pd.Timestamp
+
+
+def prepare_return_comparison_data(
+    nav: pd.DataFrame,
+    sp500_benchmark: pd.Series,
+    nasdaq100_benchmark: pd.Series,
+    currency: str = "pln",
+) -> ReturnComparisonData:
+    benchmarks = {"sp500": sp500_benchmark, "nasdaq100": nasdaq100_benchmark}
+    portfolio_monthly, benchmarks_monthly, final_returns, final_portfolio, first_day = (
+        _monthly_return_comparison_data(nav, benchmarks, currency)
+    )
+    return ReturnComparisonData(
+        portfolio_monthly=portfolio_monthly,
+        benchmarks_monthly=benchmarks_monthly,
+        final_returns=final_returns,
+        final_portfolio=final_portfolio,
+        first_day=first_day,
+    )
+
+
+def _comparison_subtitle(data: ReturnComparisonData, show_sp500: bool, show_nasdaq: bool) -> str:
+    parts = [
+        f"Start: {data.first_day.strftime('%Y-%m-%d')} (0%)",
+        f"Portfel: {_polish_decimal(data.final_portfolio)}%",
+    ]
+    if show_sp500:
+        parts.append(f"S&P 500: {_polish_decimal(data.final_returns['sp500'])}%")
+    if show_nasdaq:
+        parts.append(f"NASDAQ 100: {_polish_decimal(data.final_returns['nasdaq100'])}%")
+    return " | ".join(parts)
+
+
+def _style_return_comparison_axes(fig: go.Figure, point_count: int) -> None:
+    fig.update_xaxes(
+        type="date",
+        showgrid=True,
+        gridcolor="rgba(100, 116, 139, 0.25)",
+        tickformat="%b %Y",
+        tickangle=0,
+        dtick="M1",
+        nticks=min(12, max(4, point_count)),
+        linecolor="rgba(148, 163, 184, 0.4)",
+        mirror=False,
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridcolor="rgba(100, 116, 139, 0.25)",
+        ticksuffix="%",
+        tickformat=".0f",
+        zeroline=True,
+        zerolinecolor="rgba(148, 163, 184, 0.55)",
+        zerolinewidth=1.5,
+        linecolor="rgba(148, 163, 184, 0.4)",
+        mirror=False,
+    )
+
+
+def build_return_comparison_figure(
+    nav: pd.DataFrame,
+    sp500_benchmark: pd.Series,
+    nasdaq100_benchmark: pd.Series,
+    currency: str = "pln",
+    *,
+    show_sp500: bool = False,
+    show_nasdaq: bool = False,
+    data: ReturnComparisonData | None = None,
+) -> go.Figure:
+    if data is None:
+        data = prepare_return_comparison_data(nav, sp500_benchmark, nasdaq100_benchmark, currency)
+
+    x_dates = _to_datetime_list(data.portfolio_monthly.index)
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Scatter(
+            x=x_dates,
+            y=data.portfolio_monthly.tolist(),
+            name=f"Twój portfel ({_polish_decimal(data.final_portfolio)}%)",
+            mode="lines+markers",
+            marker=dict(size=7, color=CHART_COLORS["nav"], line=dict(width=1, color="#0f172a")),
+            line=dict(color=CHART_COLORS["nav"], width=3, shape="spline"),
+            fill="tozeroy",
+            fillcolor="rgba(34, 197, 94, 0.08)",
+            hovertemplate=HOVER_RETURN,
+            visible=True,
+        )
+    )
+
+    visibility = {"sp500": show_sp500, "nasdaq100": show_nasdaq}
+    for key, (label, color) in BENCHMARK_META.items():
+        series = data.benchmarks_monthly[key]
+        fig.add_trace(
+            go.Scatter(
+                x=_to_datetime_list(series.index),
+                y=series.tolist(),
+                name=f"{label} ({_polish_decimal(data.final_returns[key])}%)",
+                mode="lines+markers",
+                marker=dict(size=6, color=color, line=dict(width=1, color="#0f172a")),
+                line=dict(color=color, width=2.5, shape="spline", dash="dot" if key == "nasdaq100" else "solid"),
+                hovertemplate=HOVER_RETURN,
+                visible=visibility[key],
+            )
+        )
+
+    fig.update_layout(
+        **RETURN_CHART_LAYOUT,
+        title=dict(
+            text=(
+                "Zwrot z kapitału – dane miesięczne<br>"
+                f"<sup style='color:#94a3b8'>{_comparison_subtitle(data, show_sp500, show_nasdaq)}</sup>"
+            ),
+            x=0,
+            xanchor="left",
+        ),
+        yaxis_title="Stopa zwrotu",
+        xaxis_title="",
+        hoverlabel=dict(bgcolor="#1e293b", font_size=12),
+    )
+    _style_return_comparison_axes(fig, len(data.portfolio_monthly))
+    return fig
+
+
+def show_return_comparison_widget(
+    nav: pd.DataFrame,
+    sp500_benchmark: pd.Series,
+    nasdaq100_benchmark: pd.Series,
+    currency: str = "pln",
+    data: ReturnComparisonData | None = None,
+) -> None:
+    import ipywidgets as widgets
+    from IPython.display import display
+
+    if data is None:
+        data = prepare_return_comparison_data(nav, sp500_benchmark, nasdaq100_benchmark, currency)
+
+    fig = go.FigureWidget(
+        build_return_comparison_figure(
+            nav,
+            sp500_benchmark,
+            nasdaq100_benchmark,
+            currency,
+            show_sp500=True,
+            show_nasdaq=False,
+            data=data,
+        )
+    )
+
+    chk_sp500 = widgets.Checkbox(value=True, description="S&P 500 TR")
+    chk_nasdaq = widgets.Checkbox(value=False, description="NASDAQ 100")
+
+    def _update_visibility(_=None) -> None:
+        show_sp500 = chk_sp500.value
+        show_nasdaq = chk_nasdaq.value
+        with fig.batch_update():
+            fig.data[1].visible = show_sp500
+            fig.data[2].visible = show_nasdaq
+            fig.layout.title.text = (
+                "Zwrot z kapitału – dane miesięczne<br>"
+                f"<sup>{_comparison_subtitle(data, show_sp500, show_nasdaq)}</sup>"
+            )
+
+    for widget in (chk_sp500, chk_nasdaq):
+        widget.observe(_update_visibility, names="value")
+
+    panel = widgets.VBox(
+        [
+            widgets.HTML("<b>Pokaż na wykresie</b>"),
+            widgets.HTML("<i>Twój portfel (zawsze)</i>"),
+            chk_sp500,
+            chk_nasdaq,
+        ],
+        layout=widgets.Layout(min_width="180px"),
+    )
+    display(
+        widgets.HBox(
+            [panel, fig],
+            layout=widgets.Layout(align_items="flex-start", gap="16px"),
+        )
+    )
+
+
+def plot_benchmark_comparison(
+    nav: pd.DataFrame,
+    benchmark: pd.Series,
+    currency: str = "pln",
+    *,
+    benchmark_name: str = "S&P 500 TR",
+    benchmark_color: str | None = None,
+) -> go.Figure:
+    """Backward-compatible wrapper for a single benchmark line."""
+    is_nasdaq = "nasdaq" in benchmark_name.lower()
+    fig = build_return_comparison_figure(
+        nav,
+        sp500_benchmark=benchmark,
+        nasdaq100_benchmark=benchmark,
+        currency=currency,
+        show_sp500=not is_nasdaq,
+        show_nasdaq=is_nasdaq,
+    )
+    trace_idx = 2 if is_nasdaq else 1
+    if benchmark_color and len(fig.data) > trace_idx:
+        fig.data[trace_idx].line.color = benchmark_color
+    if len(fig.data) > trace_idx:
+        final_label = fig.data[trace_idx].name.split("(")[-1].rstrip(")")
+        fig.data[trace_idx].name = f"{benchmark_name} ({final_label}"
+    return fig
 
 
 def plot_nav_with_deposits(nav: pd.DataFrame, currency: str = "pln") -> go.Figure:
@@ -169,58 +442,6 @@ def plot_nav_with_deposits(nav: pd.DataFrame, currency: str = "pln") -> go.Figur
     )
     _apply_axis_style(fig)
     fig.update_yaxes(tickformat=",.2f")
-    return fig
-
-
-def plot_benchmark_comparison(
-    nav: pd.DataFrame,
-    benchmark: pd.Series,
-    currency: str = "pln",
-) -> go.Figure:
-    portfolio_monthly, benchmark_monthly, final_portfolio, final_benchmark, first_day = (
-        _monthly_returns_from_first_deposit(nav, benchmark, currency)
-    )
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=portfolio_monthly.index,
-            y=portfolio_monthly,
-            name=f"Twój portfel ({_polish_decimal(final_portfolio)}%)",
-            mode="lines+markers",
-            marker=dict(size=4),
-            line=dict(color=CHART_COLORS["nav"], width=2.5),
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=benchmark_monthly.index,
-            y=benchmark_monthly,
-            name=f"S&P 500 TR ({_polish_decimal(final_benchmark)}%)",
-            mode="lines+markers",
-            marker=dict(size=4),
-            line=dict(color=CHART_COLORS["benchmark"], width=2.5),
-        )
-    )
-
-    fig.update_layout(
-        **CHART_LAYOUT,
-        title=dict(
-            text=(
-                "Zwrot z kapitału i benchmark – dane miesięczne<br>"
-                f"<sup>Start: {first_day.strftime('%Y-%m-%d')} (0%) | "
-                f"Portfel: {_polish_decimal(final_portfolio)}% | "
-                f"Benchmark: {_polish_decimal(final_benchmark)}%</sup>"
-            ),
-            x=0.5,
-            xanchor="center",
-        ),
-        yaxis_title="Stopa zwrotu [%]",
-        xaxis_title="",
-    )
-    point_count = len(portfolio_monthly)
-    _apply_axis_style(fig, max_ticks=min(18, max(6, point_count)))
-    fig.update_yaxes(tickformat=",.0f")
     return fig
 
 
