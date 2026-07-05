@@ -49,8 +49,8 @@ jupyter notebook notebooks/portfolio_analysis.ipynb
 - Parses multi-section XTB CSV exports (semicolon, European decimals)
 - Tracks positions (average cost), cash, dividends, transfers
 - Reconstructs daily portfolio NAV in PLN, USD, EUR **through today** using live Yahoo Finance prices
-- Metrics: total return, CAGR, Sharpe, Sortino, max drawdown, ATH, beta/alpha vs S&P 500
-- **Deposit-matched S&P 500 Total Return benchmark** (SP500TR, buy index at each deposit time)
+- Metrics: total return, CAGR, Sharpe, Sortino, max drawdown, ATH, beta/alpha vs S&P 500 and NASDAQ 100
+- **Deposit-matched benchmarks** — S&P 500 Total Return (SP500TR) and NASDAQ 100 Total Return (XNDX), buy index at each deposit time
 - **FX conversion cost** — XTB 0.5% commission on PLN → USD/EUR conversions
 - Sector allocation pie chart via Yahoo Finance
 - Dark-theme Plotly charts: return gauge, NAV vs deposits, benchmark comparison, sector pie
