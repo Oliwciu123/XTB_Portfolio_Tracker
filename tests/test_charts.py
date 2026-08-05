@@ -17,40 +17,37 @@ def _sample_nav() -> pd.DataFrame:
     )
 
 
-def _sample_benchmark(nav: pd.DataFrame, factor: float) -> pd.Series:
-    return nav["deposits_pln"] * factor
+def _sample_benchmarks(nav: pd.DataFrame) -> dict[str, pd.Series]:
+    return {
+        "sp500": nav["deposits_pln"] * 1.05,
+        "nasdaq100": nav["deposits_pln"] * 1.08,
+        "acwi": nav["deposits_pln"] * 1.03,
+    }
 
 
-def test_build_return_comparison_figure_has_three_traces():
+def test_build_return_comparison_figure_has_all_traces():
     nav = _sample_nav()
-    sp500 = _sample_benchmark(nav, 1.05)
-    nasdaq = _sample_benchmark(nav, 1.08)
-    fig = build_return_comparison_figure(
-        nav, sp500, nasdaq, currency="pln", show_sp500=True, show_nasdaq=True
-    )
-    assert len(fig.data) == 3
-    assert fig.data[0].visible is True
-    assert fig.data[1].visible is True
-    assert fig.data[2].visible is True
+    fig = build_return_comparison_figure(nav, _sample_benchmarks(nav), "pln")
+    assert len(fig.data) == 4  # portfolio + 3 benchmarks
+    assert all(trace.visible is True for trace in fig.data)
 
 
 def test_build_return_comparison_figure_portfolio_only():
     nav = _sample_nav()
-    sp500 = _sample_benchmark(nav, 1.05)
-    nasdaq = _sample_benchmark(nav, 1.08)
     fig = build_return_comparison_figure(
-        nav, sp500, nasdaq, currency="pln", show_sp500=False, show_nasdaq=False
+        nav,
+        _sample_benchmarks(nav),
+        "pln",
+        visible={"sp500": False, "nasdaq100": False, "acwi": False},
     )
     assert fig.data[0].visible is True
-    assert fig.data[1].visible is False
-    assert fig.data[2].visible is False
+    assert all(trace.visible is False for trace in fig.data[1:])
 
 
 def test_prepare_return_comparison_data():
     nav = _sample_nav()
-    sp500 = _sample_benchmark(nav, 1.05)
-    nasdaq = _sample_benchmark(nav, 1.08)
-    data = prepare_return_comparison_data(nav, sp500, nasdaq, "pln")
+    data = prepare_return_comparison_data(nav, _sample_benchmarks(nav), "pln")
     assert len(data.portfolio_monthly) >= 2
     assert "sp500" in data.benchmarks_monthly
     assert "nasdaq100" in data.benchmarks_monthly
+    assert "acwi" in data.benchmarks_monthly

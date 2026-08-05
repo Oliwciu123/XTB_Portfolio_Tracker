@@ -81,10 +81,14 @@ def build_nav_series(
 
         cash_total = {"PLN": 0.0, "USD": 0.0, "EUR": 0.0}
         holdings_total = {"PLN": 0.0, "USD": 0.0, "EUR": 0.0}
+        # Assets denominated in each currency, valued in that currency (no FX conversion).
+        local_total = {"PLN": 0.0, "USD": 0.0, "EUR": 0.0}
         holdings_breakdown: dict[str, float] = {}
 
         for account_key, cash in state.cash.items():
             currency = account_key.split(":")[-1]
+            if currency in local_total:
+                local_total[currency] += float(cash)
             for target in cash_total:
                 cash_total[target] += convert_value(float(cash), currency, target, fx_row)
 
@@ -95,6 +99,8 @@ def build_nav_series(
             price = float(day_prices.get(symbol, 0) or 0)
             market_value = float(pos.shares) * price
             holdings_breakdown[symbol] = holdings_breakdown.get(symbol, 0.0) + market_value
+            if currency in local_total:
+                local_total[currency] += market_value
             for target in holdings_total:
                 holdings_total[target] += convert_value(market_value, currency, target, fx_row)
 
@@ -104,6 +110,7 @@ def build_nav_series(
             row[f"cash_{currency}"] = cash_total[upper]
             row[f"holdings_{currency}"] = holdings_total[upper]
             row[f"nav_{currency}"] = cash_total[upper] + holdings_total[upper]
+            row[f"local_{currency}"] = local_total[upper]
         nav_rows.append(row)
 
         for symbol, value in holdings_breakdown.items():
