@@ -1,6 +1,6 @@
 # xtb_portfolio_analyzer
 
-Analyze your XTB portfolio from CSV cash-operation exports.
+Analyze your XTB portfolio from CSV cash-operation exports and generate a professional, interactive HTML report.
 
 ## Setup
 
@@ -36,24 +36,88 @@ python -c "import xtb_analyzer; print(xtb_analyzer.__file__)"
 
 1. Export cash operation history from XTB (CSV) for each account.
 2. Place files in `data/` (e.g. `XTB_USD_account_cs.csv`, `XTB_EURO_account_cs.csv`).
-3. Open the notebook:
+
+### HTML report (recommended)
+
+```bash
+python -m xtb_analyzer --currency pln --open
+```
+
+Options: `--data-dir`, `--output-dir`, `--currency pln|usd|eur`, `--no-cache`, `--no-live`, `--open`.
+The report is written to `output/report.html` — a self-contained, interactive page (charts require internet for the plotly.js CDN).
+
+### Notebook
 
 ```bash
 jupyter notebook notebooks/portfolio_analysis.ipynb
 ```
 
-4. Run all cells. Results are saved to `output/`.
+Run all cells. Results (CSV, JSON and the HTML report) are saved to `output/`.
 
 ## Features
 
+### Returns (three methods, easy to compare)
+
+- **ROI** — simple return on deposited capital (value ÷ deposits − 1)
+- **MWR / XIRR** — money-weighted return of the actual cash flows (bisection solver); shown for the holding period, with the annualized XIRR alongside
+- **TWR** — time-weighted return with deposits neutralized; cumulative and annualized, directly comparable with indices
+
+### Benchmarks
+
+- **Deposit-matched benchmarks** — S&P 500 Total Return (^SP500TR), NASDAQ 100 (^NDX) and MSCI ACWI (ACWI ETF proxy): every deposit buys the index on the deposit day, so timing and size of flows match your portfolio exactly
+
+### FX attribution
+
+- Splits total PLN gain into **investment gain** (what the assets earned) and **currency gain** (what holding USD/EUR earned or lost, including the XTB conversion spread) — exact decomposition, per currency and over time
+
+### Risk (computed on TWR daily returns)
+
+- Annualized volatility, Sharpe, Sortino, Calmar, VaR 95%
+- Max drawdown with dates, drawdown chart, monthly returns heatmap, rolling volatility
+- Beta, alpha and correlation vs S&P 500 TR, NASDAQ 100 and MSCI ACWI
+
+### Portfolio structure & costs
+
+- Positions with average cost, market value and unrealized P&L (live Yahoo Finance prices)
+- Allocation by position, by account currency and by sector
+- Dividends, interest and withholding taxes per currency
+- FX conversion cost — XTB 0.5% commission on PLN → USD/EUR conversions
+
+### Engine
+
 - Parses multi-section XTB CSV exports (semicolon, European decimals)
-- Tracks positions (average cost), cash, dividends, transfers
-- Reconstructs daily portfolio NAV in PLN, USD, EUR **through today** using live Yahoo Finance prices
-- Metrics: total return, CAGR, Sharpe, Sortino, max drawdown, ATH, beta/alpha vs S&P 500 and NASDAQ 100
-- **Deposit-matched benchmarks** — S&P 500 Total Return (SP500TR) and NASDAQ 100 Total Return (XNDX), buy index at each deposit time
-- **FX conversion cost** — XTB 0.5% commission on PLN → USD/EUR conversions
-- Sector allocation pie chart via Yahoo Finance
-- Dark-theme Plotly charts: return gauge, NAV vs deposits, benchmark comparison, sector pie
+- Reconstructs daily portfolio NAV in PLN, USD, EUR through today
+- FX rates from NBP (table A) with Yahoo Finance fallback; on-disk price/FX caches
+
+## Project layout
+
+```
+src/xtb_analyzer/
+  parser.py         # XTB CSV parsing
+  comment_parser.py # trade/transfer comment parsing
+  models.py         # dataclasses
+  positions.py      # position tracking (average cost)
+  portfolio.py      # daily NAV reconstruction
+  flows.py          # deposits, conversion costs
+  cash.py           # cash ledger, income by currency
+  fx.py             # NBP / Yahoo FX rates
+  prices.py         # price fetching + cache
+  benchmark.py      # deposit-matched index benchmarks
+  returns.py        # ROI, XIRR (MWR), TWR
+  risk.py           # risk statistics on TWR returns
+  attribution.py    # FX vs investment gain decomposition
+  metrics.py        # legacy metrics + tables + JSON report
+  sectors.py        # sector enrichment (Yahoo)
+  charts.py         # Plotly figures (dark theme)
+  report.py         # HTML report generator
+  __main__.py       # CLI: python -m xtb_analyzer
+```
+
+## Tests
+
+```bash
+pytest
+```
 
 ## Data privacy
 

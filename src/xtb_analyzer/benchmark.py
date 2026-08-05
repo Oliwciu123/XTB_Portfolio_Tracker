@@ -9,8 +9,16 @@ from xtb_analyzer.prices import fetch_benchmarks
 
 SP500_TR_TICKER = "^SP500TR"
 NASDAQ100_TICKER = "^NDX"
+# iShares MSCI ACWI ETF - liquid proxy for the MSCI All Country World Index.
+ACWI_TICKER = "ACWI"
 # Backward-compatible alias (XNDX is unavailable on Yahoo Finance).
 NASDAQ100_TR_TICKER = NASDAQ100_TICKER
+
+BENCHMARK_TICKERS: dict[str, str] = {
+    "sp500": SP500_TR_TICKER,
+    "nasdaq100": NASDAQ100_TICKER,
+    "acwi": ACWI_TICKER,
+}
 
 
 def _simulate_deposit_benchmark(
@@ -106,29 +114,30 @@ def build_deposit_benchmark(
     )
 
 
-def build_deposit_benchmarks(
+def build_benchmark_suite(
     accounts: list[Account],
     calendar: pd.DatetimeIndex,
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = False,
-) -> tuple[pd.Series, pd.Series]:
-    """Build S&P 500 and NASDAQ-100 benchmarks with one index batch fetch and one FX fetch."""
+) -> dict[str, pd.Series]:
+    """Deposit-matched benchmarks for all configured indices in one batch fetch.
+
+    Returns a dict keyed by ``BENCHMARK_TICKERS`` keys (sp500, nasdaq100, acwi).
+    """
     deposits = extract_deposits(accounts)
     if not deposits or calendar.empty:
-        empty = pd.Series(dtype=float)
-        return empty, empty
+        return {key: pd.Series(dtype=float) for key in BENCHMARK_TICKERS}
 
     first_deposit = pd.Timestamp(deposits[0].timestamp.date())
     calendar = calendar[calendar >= first_deposit]
     if calendar.empty:
-        empty = pd.Series(dtype=float)
-        return empty, empty
+        return {key: pd.Series(dtype=float) for key in BENCHMARK_TICKERS}
 
     start = first_deposit.date().isoformat()
     end = (calendar[-1] + pd.Timedelta(days=1)).date().isoformat()
     indices = fetch_benchmarks(
-        [SP500_TR_TICKER, NASDAQ100_TICKER],
+        list(BENCHMARK_TICKERS.values()),
         start=start,
         end=end,
         use_cache=use_cache,
@@ -136,25 +145,30 @@ def build_deposit_benchmarks(
     )
     fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache)
 
-    sp500 = _simulate_deposit_benchmark(
-        accounts,
-        calendar,
-        currency,
-        indices.get(SP500_TR_TICKER, pd.Series(dtype=float)),
-        "sp500_benchmark",
-        fx,
-        deposits,
-    )
-    nasdaq = _simulate_deposit_benchmark(
-        accounts,
-        calendar,
-        currency,
-        indices.get(NASDAQ100_TICKER, pd.Series(dtype=float)),
-        "nasdaq100_benchmark",
-        fx,
-        deposits,
-    )
-    return sp500, nasdaq
+    return {
+        key: _simulate_deposit_benchmark(
+            accounts,
+            calendar,
+            currency,
+            indices.get(ticker, pd.Series(dtype=float)),
+            f"{key}_benchmark",
+            fx,
+            deposits,
+        )
+        for key, ticker in BENCHMARK_TICKERS.items()
+    }
+
+
+def build_deposit_benchmarks(
+    accounts: list[Account],
+    calendar: pd.DatetimeIndex,
+    currency: str = "pln",
+    use_cache: bool = True,
+    refresh_latest: bool = False,
+) -> tuple[pd.Series, pd.Series]:
+    """Backward-compatible wrapper returning (S&P 500, NASDAQ 100)."""
+    suite = build_benchmark_suite(accounts, calendar, currency, use_cache, refresh_latest)
+    return suite["sp500"], suite["nasdaq100"]
 
 
 def build_sp500_deposit_benchmark(
