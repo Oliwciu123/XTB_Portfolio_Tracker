@@ -603,6 +603,63 @@ def load_csv(path: str | Path) -> Account:
     return Account(transactions=transactions, **meta)
 
 
+def find_project_root(start: Path | None = None) -> Path:
+    """Locate the repo root whether the process cwd is project root or ``notebooks/``."""
+    start = (start or Path.cwd()).resolve()
+    for base in (start, *start.parents):
+        if (base / "pyproject.toml").is_file():
+            return base
+        if (base / "src" / "xtb_analyzer").is_dir():
+            return base
+    if start.name.lower() == "notebooks":
+        return start.parent
+    return start
+
+
+def default_data_dir(start: Path | None = None) -> Path:
+    """``<project>/data`` — stable across notebook and CLI working directories."""
+    return find_project_root(start) / "data"
+
+
+def describe_export_discovery(data_dir: str | Path) -> str:
+    """Human-readable diagnostics when no exports are found."""
+    data_dir = Path(data_dir)
+    resolved = data_dir.resolve()
+    lines = [
+        f"Szukano w: {resolved}",
+        f"Katalog istnieje: {data_dir.is_dir()}",
+    ]
+    if data_dir.is_dir():
+        entries = sorted(p.name for p in data_dir.iterdir() if not p.name.startswith("."))
+        if entries:
+            lines.append("Zawartość katalogu:")
+            for name in entries[:30]:
+                lines.append(f"  • {name}")
+            if len(entries) > 30:
+                lines.append(f"  … i {len(entries) - 30} więcej")
+        else:
+            lines.append("Katalog data/ jest pusty.")
+        # Show near-misses: XTB* files that failed parseability.
+        xtb_files = sorted(data_dir.glob("XTB_*"))
+        if xtb_files:
+            lines.append("Pliki XTB_* obecne, ale żaden nie przeszedł walidacji Cash Operations:")
+            for path in xtb_files:
+                reason = "OK" if _has_cash_operations_content(path) else "nieparsowalny / zły format"
+                if _is_positions_only_file(path):
+                    reason = "Closed/Open Positions (pominięty)"
+                lines.append(f"  • {path.name}: {reason}")
+    else:
+        lines.append(
+            "Upewnij się, że pliki leżą w katalogu projektu: "
+            f"{find_project_root() / 'data'}"
+        )
+    lines.append(
+        "Oczekiwane nazwy: XTB_USD_cs.xlsx, XTB_EURO_cs.xlsx "
+        "(xStation → Historia → Eksportuj jako XLSX)."
+    )
+    return "\n".join(lines)
+
+
 def load_accounts(paths: list[str | Path]) -> list[Account]:
     accounts: list[Account] = []
     for path in paths:

@@ -204,3 +204,34 @@ def test_discover_skips_closed_positions(tmp_path: Path):
     assert "xStation5_cashOperations_USD.csv" in found
     assert "xStation5_closedPositions_USD.csv" not in found
     assert "XTB_USD_account.csv" not in found
+
+
+def test_find_project_root_from_notebooks_cwd(tmp_path: Path, monkeypatch):
+    from xtb_analyzer.parser import default_data_dir, find_project_root
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    notebooks = tmp_path / "notebooks"
+    notebooks.mkdir()
+    monkeypatch.chdir(notebooks)
+    assert find_project_root() == tmp_path.resolve()
+    assert default_data_dir() == (tmp_path / "data").resolve()
+
+
+def test_find_project_root_from_repo_cwd(tmp_path: Path, monkeypatch):
+    from xtb_analyzer.parser import default_data_dir, find_project_root
+
+    (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n", encoding="utf-8")
+    (tmp_path / "data").mkdir()
+    monkeypatch.chdir(tmp_path)
+    assert find_project_root() == tmp_path.resolve()
+    assert default_data_dir() == (tmp_path / "data").resolve()
+
+
+def test_describe_export_discovery_lists_directory(tmp_path: Path):
+    from xtb_analyzer.parser import describe_export_discovery
+
+    (tmp_path / "notes.txt").write_text("x", encoding="utf-8")
+    text = describe_export_discovery(tmp_path)
+    assert str(tmp_path.resolve()) in text
+    assert "notes.txt" in text

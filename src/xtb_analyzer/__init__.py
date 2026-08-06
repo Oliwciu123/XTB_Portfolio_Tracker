@@ -41,7 +41,14 @@ from xtb_analyzer.metrics import (
     portfolio_snapshot,
 )
 from xtb_analyzer.models import Account, Transaction
-from xtb_analyzer.parser import discover_export_files, load_accounts, load_csv
+from xtb_analyzer.parser import (
+    default_data_dir,
+    describe_export_discovery,
+    discover_export_files,
+    find_project_root,
+    load_accounts,
+    load_csv,
+)
 from xtb_analyzer.report import collect_report_data, generate_report, render_html_report
 from xtb_analyzer.returns import ReturnMeasures, compute_return_measures, twr_daily_returns, xirr
 from xtb_analyzer.risk import RiskStats, compute_risk_stats
@@ -66,8 +73,11 @@ __all__ = [
     "compute_return_measures",
     "compute_risk_stats",
     "conversion_summary",
+    "default_data_dir",
+    "describe_export_discovery",
     "discover_export_files",
     "extract_deposits",
+    "find_project_root",
     "format_metrics_table",
     "format_positions_table",
     "format_realized_pnl_table",

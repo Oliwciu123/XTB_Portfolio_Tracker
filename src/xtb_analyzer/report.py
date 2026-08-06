@@ -610,10 +610,11 @@ def generate_report(
 
     csv_files = discover_export_files(data_dir)
     if not csv_files:
+        from xtb_analyzer.parser import describe_export_discovery
+
         raise FileNotFoundError(
-            f"Brak eksportów XTB w {data_dir.resolve()}. "
-            "Wklej raporty konta XTB do data/: XTB_USD_cs.xlsx i XTB_EURO_cs.xlsx "
-            "(xStation → Historia → Eksportuj jako XLSX)."
+            f"Brak eksportów XTB w {data_dir.resolve()}.\n"
+            + describe_export_discovery(data_dir)
         )
 
     accounts = load_accounts(csv_files)
