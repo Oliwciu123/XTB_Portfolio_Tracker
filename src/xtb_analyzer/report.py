@@ -608,7 +608,12 @@ def generate_report(
     data_dir = Path(data_dir)
     output_dir = Path(output_dir)
 
-    csv_files = discover_export_files(data_dir)
+    try:
+        csv_files = discover_export_files(data_dir)
+    except ValueError as exc:
+        from xtb_analyzer.parser import describe_export_discovery
+
+        raise FileNotFoundError(str(exc) + "\n\n" + describe_export_discovery(data_dir)) from exc
     if not csv_files:
         from xtb_analyzer.parser import describe_export_discovery
 

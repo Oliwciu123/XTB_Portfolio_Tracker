@@ -235,3 +235,30 @@ def test_describe_export_discovery_lists_directory(tmp_path: Path):
     text = describe_export_discovery(tmp_path)
     assert str(tmp_path.resolve()) in text
     assert "notes.txt" in text
+
+
+def test_discover_raises_with_reason_for_unreadable_cs_xlsx(tmp_path: Path):
+    """Canonical XTB_*_cs.xlsx that cannot be opened must not fail silently."""
+    bad = tmp_path / "XTB_USD_cs.xlsx"
+    bad.write_bytes(b"not-an-xlsx")
+    with pytest.raises(ValueError, match="nie udało się ich odczytać"):
+        discover_export_files(tmp_path)
+
+
+def test_cash_operations_status_reports_openpyxl_hint(tmp_path: Path, monkeypatch):
+    from xtb_analyzer import parser as parser_mod
+
+    path = tmp_path / "XTB_USD_cs.xlsx"
+    path.write_bytes(b"PK\x03\x04fake")
+
+    real_import = __import__
+
+    def fake_import(name, *args, **kwargs):
+        if name == "openpyxl" or name.startswith("openpyxl."):
+            raise ImportError("No module named openpyxl")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    ok, reason = parser_mod._cash_operations_status(path)
+    assert ok is False
+    assert "openpyxl" in reason.lower()

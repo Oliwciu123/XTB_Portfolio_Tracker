@@ -185,34 +185,113 @@ def _read_csv_rows(path: Path) -> list[list[str]]:
     return list(csv.reader(text.splitlines(), delimiter=delimiter))
 
 
+def _sheet_rows(sheet) -> list[list[object]]:
+    rows: list[list[object]] = []
+    for row in sheet.iter_rows(values_only=True):
+        cells = ["" if c is None else c for c in row]
+        # XTB account XLSX pads a blank leading column — strip all leading empties.
+        while cells and cells[0] == "":
+            cells = cells[1:]
+        rows.append(cells)
+    return rows
+
+
+def _sheet_has_cash_ops(rows: list[list[object]]) -> bool:
+    if _find_history_marker(rows) is not None:
+        return True
+    try:
+        _find_transaction_header(rows, start=0)
+        return True
+    except ValueError:
+        return False
+
+
+def _is_cash_ops_sheet_name(name: str) -> bool:
+    lowered = name.strip().lower()
+    return any(
+        token in lowered
+        for token in (
+            "cash operation",
+            "cash operations",
+            "operacji gotówk",
+            "operacje gotówk",
+            "historia operacji",
+        )
+    )
+
+
 def _read_xlsx_rows(path: Path) -> list[list[object]]:
     try:
         import openpyxl
     except ImportError as exc:
         raise ImportError(
-            "Reading .xlsx requires openpyxl. Install with: pip install openpyxl"
+            "Brak pakietu openpyxl w tym interpreterze Pythona.\n"
+            "W terminalu (ten sam Python co kernel notebooka) uruchom:\n"
+            "  python -m pip install openpyxl\n"
+            "Potem Restart Kernel i odpal komórki od nowa."
         ) from exc
 
-    workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
-    sheet = None
-    for name in workbook.sheetnames:
-        lowered = name.strip().lower()
-        if HISTORY_MARKER.lower() in lowered or "cash operation" in lowered:
-            sheet = workbook[name]
-            break
-    if sheet is None:
-        # Prefer last sheet (XTB usually puts cash ops last) over closed positions.
-        sheet = workbook[workbook.sheetnames[-1]]
+    size = path.stat().st_size if path.exists() else 0
+    if size < 64:
+        raise ValueError(
+            f"{path.name} ma tylko {size} bajtów — plik jest pusty albo jeszcze "
+            "niezsynchronizowany z OneDrive. W Eksploratorze: PPM → Zawsze zachowuj na tym urządzeniu, "
+            "poczekaj aż ikona chmury zniknie, potem spróbuj ponownie."
+        )
 
-    rows: list[list[object]] = []
-    for row in sheet.iter_rows(values_only=True):
-        cells = ["" if c is None else c for c in row]
-        # XTB account XLSX pads a blank leading column — strip all leading empties.
-        while cells and (cells[0] == "" or cells[0] is None):
-            cells = cells[1:]
-        rows.append(cells)
-    workbook.close()
-    return rows
+    last_error: Exception | None = None
+    workbook = None
+    for read_only in (True, False):
+        try:
+            workbook = openpyxl.load_workbook(path, data_only=True, read_only=read_only)
+            break
+        except Exception as exc:  # noqa: BLE001 — surface later with context
+            last_error = exc
+            workbook = None
+
+    if workbook is None:
+        hint = ""
+        err_text = str(last_error or "")
+        if "zip" in err_text.lower() or "not a zip" in err_text.lower():
+            hint = (
+                " Plik nie jest prawidłowym XLSX (częsty efekt OneDrive „tylko online” "
+                "albo uszkodzonego pobrania). Pobierz lokalnie / wyeksportuj ponownie z xStation."
+            )
+        raise ValueError(
+            f"Nie można otworzyć {path.name} przez openpyxl "
+            f"({type(last_error).__name__}: {last_error}).{hint}"
+        ) from last_error
+
+    try:
+        # 1) Prefer sheet by name.
+        preferred = None
+        for name in workbook.sheetnames:
+            if _is_cash_ops_sheet_name(name):
+                preferred = workbook[name]
+                break
+
+        candidates: list = []
+        if preferred is not None:
+            candidates.append(preferred)
+        # 2) Then every sheet (cash ops is usually last in XTB exports).
+        for name in workbook.sheetnames:
+            sheet = workbook[name]
+            if sheet is not preferred:
+                candidates.append(sheet)
+
+        best_rows: list[list[object]] | None = None
+        for sheet in candidates:
+            rows = _sheet_rows(sheet)
+            if _sheet_has_cash_ops(rows):
+                return rows
+            if best_rows is None:
+                best_rows = rows
+
+        if best_rows is None:
+            raise ValueError(f"{path.name}: workbook has no sheets")
+        return best_rows
+    finally:
+        workbook.close()
 
 
 def _read_rows(path: Path) -> list[list[object]]:
@@ -629,25 +708,41 @@ def describe_export_discovery(data_dir: str | Path) -> str:
         f"Szukano w: {resolved}",
         f"Katalog istnieje: {data_dir.is_dir()}",
     ]
+    try:
+        import openpyxl  # noqa: F401
+
+        openpyxl_status = "OK"
+    except ImportError:
+        openpyxl_status = (
+            "BRAK — uruchom w tym samym Pythonie co kernel: python -m pip install openpyxl"
+        )
+    lines.append(f"openpyxl: {openpyxl_status}")
+
     if data_dir.is_dir():
-        entries = sorted(p.name for p in data_dir.iterdir() if not p.name.startswith("."))
+        entries = sorted(
+            (p for p in data_dir.iterdir() if not p.name.startswith(".")),
+            key=lambda p: p.name.lower(),
+        )
         if entries:
             lines.append("Zawartość katalogu:")
-            for name in entries[:30]:
-                lines.append(f"  • {name}")
-            if len(entries) > 30:
-                lines.append(f"  … i {len(entries) - 30} więcej")
+            for path in entries[:40]:
+                if path.is_file():
+                    lines.append(f"  • {path.name} ({path.stat().st_size} bajtów)")
+                else:
+                    lines.append(f"  • {path.name}/")
+            if len(entries) > 40:
+                lines.append(f"  … i {len(entries) - 40} więcej")
         else:
             lines.append("Katalog data/ jest pusty.")
-        # Show near-misses: XTB* files that failed parseability.
-        xtb_files = sorted(data_dir.glob("XTB_*"))
+
+        xtb_files = sorted(data_dir.glob("XTB_*"), key=lambda p: p.name.lower())
         if xtb_files:
-            lines.append("Pliki XTB_* obecne, ale żaden nie przeszedł walidacji Cash Operations:")
+            lines.append("Diagnostyka plików XTB_*:")
             for path in xtb_files:
-                reason = "OK" if _has_cash_operations_content(path) else "nieparsowalny / zły format"
-                if _is_positions_only_file(path):
-                    reason = "Closed/Open Positions (pominięty)"
-                lines.append(f"  • {path.name}: {reason}")
+                if not path.is_file():
+                    continue
+                ok, reason = _cash_operations_status(path)
+                lines.append(f"  • {path.name}: {'OK' if ok else reason}")
     else:
         lines.append(
             "Upewnij się, że pliki leżą w katalogu projektu: "
@@ -671,18 +766,26 @@ def load_accounts(paths: list[str | Path]) -> list[Account]:
     return accounts
 
 
-def _has_cash_operations_content(path: Path) -> bool:
-    """True when the file contains a parseable Cash Operations table."""
+def _cash_operations_status(path: Path) -> tuple[bool, str]:
+    """Return ``(ok, detail)`` — detail is empty on success, else the failure reason."""
     try:
+        if _is_positions_only_file(path):
+            return False, "Closed/Open Positions (pominięty)"
         rows = _read_rows(path)
         if not rows:
-            return False
+            return False, "plik bez wierszy"
         history_start = _find_history_marker(rows)
         start = history_start if history_start is not None else 0
         _find_transaction_header(rows, start=start)
-        return True
-    except Exception:
-        return False
+        return True, ""
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+
+
+def _has_cash_operations_content(path: Path) -> bool:
+    """True when the file contains a parseable Cash Operations table."""
+    ok, _ = _cash_operations_status(path)
+    return ok
 
 
 def _is_positions_only_file(path: Path) -> bool:
@@ -725,6 +828,10 @@ def discover_export_files(data_dir: str | Path) -> list[Path]:
     Other Cash Operations CSV/XLSX files are used only as a fallback. Closed/Open
     Positions exports and unparseable leftovers in ``data/`` are skipped so they
     cannot break the report pipeline.
+
+    If canonical ``XTB_*_cs.xlsx`` files exist but cannot be parsed, raise ``ValueError``
+    with the underlying reason (missing openpyxl, OneDrive stub, wrong sheet, …)
+    instead of returning an empty list.
     """
     data_dir = Path(data_dir)
     if not data_dir.is_dir():
@@ -755,13 +862,34 @@ def discover_export_files(data_dir: str | Path) -> list[Path]:
         for path in data_dir.glob(pattern):
             if not path.is_file() or path.name.startswith("~"):
                 continue
-            if _is_positions_only_file(path):
+            if POSITIONS_FILENAME_RE.search(path.name):
                 continue
             candidates[path.name.lower()] = path
 
-    parseable = [p for p in candidates.values() if _has_cash_operations_content(p)]
+    statuses = {path: _cash_operations_status(path) for path in candidates.values()}
+    parseable = [p for p, (ok, _) in statuses.items() if ok]
     canonical = [p for p in parseable if _is_canonical_account_report(p)]
+    named_canonical = [p for p in candidates.values() if _is_canonical_account_report(p)]
 
-    # When the user drops the standard XTB_*_cs.xlsx pair, ignore leftover CSVs.
-    chosen = canonical if canonical else parseable
-    return sorted(chosen, key=lambda p: p.name.lower())
+    if canonical:
+        return sorted(canonical, key=lambda p: p.name.lower())
+    if parseable:
+        return sorted(parseable, key=lambda p: p.name.lower())
+
+    # Canonical files present but unreadable → fail loudly with real reasons.
+    if named_canonical:
+        details = []
+        for path in sorted(named_canonical, key=lambda p: p.name.lower()):
+            ok, reason = statuses.get(path, (False, "unknown"))
+            details.append(f"  • {path.name} ({path.stat().st_size} B): {reason}")
+        raise ValueError(
+            "Znaleziono XTB_*_cs.xlsx, ale nie udało się ich odczytać:\n"
+            + "\n".join(details)
+            + "\n\nJeśli widzisz ImportError openpyxl: "
+            "python -m pip install openpyxl  (ten sam Python co kernel) "
+            "i Restart Kernel.\n"
+            "Jeśli plik ma 0 bajtów / błąd zip: OneDrive → "
+            "Zawsze zachowuj na tym urządzeniu, albo wyeksportuj ponownie z xStation."
+        )
+
+    return []
