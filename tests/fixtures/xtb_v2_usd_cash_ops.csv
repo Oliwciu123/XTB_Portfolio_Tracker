@@ -1,0 +1,19 @@
+Account number;53287226;;;;;;
+Cash Operations;;;;;;;
+Date from (UTC);2006-01-01 00:00:00;;;;;;
+Date to (UTC);2026-08-06 00:00:00;;;;;;
+Type;Ticker;Instrument;Time;Amount;ID;Comment;Product
+Transfer;;Currency conversion;2025-11-04 21:48:19;1.206,28;1002367469;Currency conversion, PLN to USD from TA: 52970582 to: 53287226, Exchange rate:0.268063;My Trades
+Stock purchase;AMD.US;Advanced Micro Devices;2025-11-04 21:52:58;-251,27;1002371121;OPEN BUY 1/1.5 @ 251.27;My Trades
+Stock purchase;AMD.US;Advanced Micro Devices;2025-11-04 21:52:57;-125,63;1002371118;OPEN BUY 0.5/1.5 @ 251.26;My Trades
+Stock purchase;UBER.US;Uber Technologies;2025-11-04 21:54:58;-379,68;1002372534;OPEN BUY 4 @ 94.92;My Trades
+Stock purchase;AMZN.US;Amazon.com;2025-11-04 21:58:12;-249,09;1002375318;OPEN BUY 1/1.7687 @ 249.09;My Trades
+Stock purchase;AMZN.US;Amazon.com;2025-11-04 21:58:11;-191,52;1002375312;OPEN BUY 0.7687/1.7687 @ 249.15;My Trades
+Transfer;;Currency conversion;2025-11-06 19:50:34;540,65;1006799586;Currency conversion, PLN to USD from TA: 52970582 to: 53287226, Exchange rate:0.270328;My Trades
+Stock purchase;AMD.US;Advanced Micro Devices;2025-11-06 19:52:49;-99,98;1006800788;OPEN BUY 0.4133 @ 241.91;My Trades
+Free funds interest;;;2025-12-04 15:15:21;0,12;1039695211;Free-funds Interest 2025-11;My Trades
+Free funds interest tax;;;2025-12-04 15:15:21;-0,03;1039695212;Free-funds Interest Tax 2025-11;My Trades
+Stock sell;AMD.US;Advanced Micro Devices;2026-05-11 15:38:29;500,00;1999999999;CLOSE BUY 1 @ 500.00;My Trades
+Dividend;AAPL.US;Apple;2026-02-15 10:00:00;2,50;1888888888;AAPL.US USD 0.25/ SHR;My Trades
+Withholding tax;AAPL.US;Apple;2026-02-15 10:00:00;-0,38;1888888889;AAPL.US USD WHT 15%;My Trades
+Total;;;;1.052,00;;;

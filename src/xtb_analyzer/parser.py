@@ -1,15 +1,14 @@
-"""XTB export parser — supports legacy multi-section CSV, modern flat Cash
-Operations CSV (2024+), and full account XLSX reports.
+"""XTB export parser — supports all known Cash Operations formats.
 
 Detected formats
 ----------------
-1. **Legacy CSV** — account metadata + ``CASH OPERATION HISTORY`` section,
+1. **Legacy CSV / XLSX** — ``CASH OPERATION HISTORY`` section,
    columns ``ID;Type;Time;Comment;Symbol;Amount``.
-2. **Modern flat CSV** — header on the first data row,
-   columns ``ID;Type;Time;Symbol;Comment;Amount`` (Symbol before Comment),
-   type labels like ``Stocks/ETF purchase``.
-3. **XLSX account report** — workbook with a ``CASH OPERATION HISTORY`` sheet
-   (same content as legacy CSV). Drop the ``.xlsx`` into ``data/`` directly.
+2. **Modern flat CSV (2024)** — header first,
+   ``ID;Type;Time;Symbol;Comment;Amount`` (or Comment before Symbol).
+3. **XTB V2 Cash Operations CSV (2025+)** — 4-line metadata preamble, then
+   ``Type;Ticker;Instrument;Time;Amount;ID;Comment;Product``.
+   Amounts use European decimals (``1.000,00``). Account id is in the preamble.
 """
 
 from __future__ import annotations
@@ -20,25 +19,34 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 
-from xtb_analyzer.comment_parser import parse_trade_comment
+from xtb_analyzer.comment_parser import parse_trade_comment, transfer_target_currency
 from xtb_analyzer.models import Account, Transaction, TransactionType
 
 HISTORY_MARKER = "CASH OPERATION HISTORY"
+CASH_OPS_MARKER = "cash operations"
 TOTAL_MARKER = "Total"
 ACCOUNT_ID_RE = re.compile(r"\b(\d{6,})\b")
 
-# Header aliases → canonical field names.
+# Header cell text (lowercased) → canonical field name.
 HEADER_ALIASES = {
     "id": "id",
     "type": "type",
+    "typ": "type",
     "time": "time",
+    "czas": "time",
     "comment": "comment",
+    "komentarz": "comment",
     "symbol": "symbol",
+    "ticker": "symbol",
     "amount": "amount",
+    "kwota": "amount",
+    "wartość": "amount",
+    "wartosc": "amount",
 }
 
 
 def parse_decimal(value: object) -> Decimal | None:
+    """Parse amounts from US (1,234.56) or European (1.234,56 / 0,24) notation."""
     if value is None:
         return None
     if isinstance(value, Decimal):
@@ -48,7 +56,19 @@ def parse_decimal(value: object) -> Decimal | None:
     text = str(value).strip()
     if not text:
         return None
-    text = text.replace("\xa0", "").replace(" ", "").replace(",", ".")
+    text = text.replace("\xa0", "").replace(" ", "")
+
+    if "," in text and "." in text:
+        # European: dot = thousands, comma = decimal  →  1.000,00
+        if text.rfind(",") > text.rfind("."):
+            text = text.replace(".", "").replace(",", ".")
+        else:
+            # US: comma = thousands, dot = decimal  →  1,000.00
+            text = text.replace(",", "")
+    elif "," in text:
+        # Only comma → treat as decimal separator
+        text = text.replace(",", ".")
+
     try:
         return Decimal(text)
     except InvalidOperation:
@@ -63,7 +83,6 @@ def parse_timestamp(value: object) -> datetime:
     if not text:
         raise ValueError("Empty timestamp")
 
-    # ISO-ish with optional fractional seconds
     iso = text.replace("Z", "")
     for candidate in (iso, iso.split(".")[0].replace("T", " ")):
         try:
@@ -91,19 +110,37 @@ def _normalize_type(raw_type: str, comment: str = "") -> TransactionType:
     raw = (raw_type or "").strip().lower()
     comment_l = (comment or "").lower()
 
-    # Buys
-    if any(token in raw for token in ("stock purchase", "stocks/etf purchase", "ações/etf compra", "etf purchase")):
+    if any(
+        token in raw
+        for token in (
+            "stock purchase",
+            "stocks/etf purchase",
+            "ações/etf compra",
+            "etf purchase",
+        )
+    ):
         return "buy"
-    # Sells
-    if any(token in raw for token in ("stock sale", "stocks/etf sale", "ações/etf vende", "etf sale")):
+    if any(
+        token in raw
+        for token in (
+            "stock sale",
+            "stock sell",
+            "stocks/etf sale",
+            "ações/etf vende",
+            "etf sale",
+        )
+    ):
         return "sell"
-    # Cash in
-    if raw in {"transfer", "deposit"} or "deposit" in raw:
+    if (
+        raw in {"transfer", "deposit"}
+        or "deposit" in raw
+        or "cash transfer in" in raw
+        or "transfer in" in raw
+    ):
         return "transfer_in"
-    if "withdrawal" in raw:
+    if "withdrawal" in raw or "cash transfer out" in raw or "transfer out" in raw:
         return "other"
-    if "divident" in raw or raw == "dividend" or raw.startswith("dividend"):
-        # Negative "dividends" in some exports are corrections / fees
+    if "divident" in raw or "dividend" in raw:
         return "dividend"
     if "withholding tax" in raw or raw.endswith("wht"):
         return "withholding_tax"
@@ -113,7 +150,6 @@ def _normalize_type(raw_type: str, comment: str = "") -> TransactionType:
         return "interest"
     if "close trade" in raw:
         return "close_trade"
-    # Currency conversion comments sometimes sit on generic "transfer" already handled.
     if "currency conversion" in comment_l:
         return "transfer_in"
     return "other"
@@ -122,18 +158,28 @@ def _normalize_type(raw_type: str, comment: str = "") -> TransactionType:
 def _detect_delimiter(sample: str) -> str:
     semi = sample.count(";")
     comma = sample.count(",")
-    return ";" if semi >= comma else ","
+    # V2 files are semicolon-delimited even though amounts contain commas.
+    return ";" if semi >= max(comma // 3, 1) or semi > 0 else ","
 
 
 def _read_csv_rows(path: Path) -> list[list[str]]:
-    raw = path.read_text(encoding="utf-8-sig")
-    if not raw.strip():
+    raw = path.read_bytes()
+    for encoding in ("utf-8-sig", "utf-16", "utf-16-le", "cp1250", "latin-1"):
+        try:
+            text = raw.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    else:
+        text = raw.decode("utf-8", errors="replace")
+
+    if not text.strip():
         raise ValueError(f"Empty file: {path}")
-    delimiter = _detect_delimiter(raw[:4000])
-    return list(csv.reader(raw.splitlines(), delimiter=delimiter))
+    delimiter = _detect_delimiter(text[:4000])
+    return list(csv.reader(text.splitlines(), delimiter=delimiter))
 
 
-def _read_xlsx_rows(path: Path) -> list[list[str]]:
+def _read_xlsx_rows(path: Path) -> list[list[object]]:
     try:
         import openpyxl
     except ImportError as exc:
@@ -144,17 +190,16 @@ def _read_xlsx_rows(path: Path) -> list[list[str]]:
     workbook = openpyxl.load_workbook(path, data_only=True, read_only=True)
     sheet = None
     for name in workbook.sheetnames:
-        if HISTORY_MARKER.strip().lower() in name.strip().lower():
+        lowered = name.strip().lower()
+        if HISTORY_MARKER.lower() in lowered or "cash operation" in lowered:
             sheet = workbook[name]
             break
     if sheet is None:
-        # Fall back to the last sheet (XTB usually puts cash ops last)
         sheet = workbook[workbook.sheetnames[-1]]
 
-    rows: list[list[str]] = []
+    rows: list[list[object]] = []
     for row in sheet.iter_rows(values_only=True):
         cells = list(row)
-        # XTB leaves column A unused — drop only that leading blank, keep alignment.
         if cells and cells[0] is None:
             cells = cells[1:]
         rows.append(["" if c is None else c for c in cells])
@@ -178,44 +223,106 @@ def _cell(row: list[object], index: int) -> str:
     return "" if value is None else str(value).strip()
 
 
+def _normalize_header_cell(value: str) -> str:
+    return value.strip().lower().replace("\ufeff", "")
+
+
+def _row_column_map(row: list[object]) -> dict[str, int]:
+    mapping: dict[str, int] = {}
+    for col_idx in range(len(row)):
+        name = _normalize_header_cell(_cell(row, col_idx))
+        canonical = HEADER_ALIASES.get(name)
+        if canonical and canonical not in mapping:
+            mapping[canonical] = col_idx
+    return mapping
+
+
 def _find_history_marker(rows: list[list[object]]) -> int | None:
     for index, row in enumerate(rows):
-        if row and HISTORY_MARKER.lower() in _cell(row, 0).lower():
+        first = _normalize_header_cell(_cell(row, 0))
+        if HISTORY_MARKER.lower() in first or first == CASH_OPS_MARKER:
             return index
     return None
 
 
 def _find_transaction_header(rows: list[list[object]], start: int = 0) -> tuple[int, dict[str, int]]:
+    """Find the header row by required columns — ID does not have to be first."""
+    required = {"type", "time", "amount"}
     for index in range(start, len(rows)):
-        cells = [_cell(rows[index], i).lower() for i in range(len(rows[index]))]
-        if not cells or cells[0] != "id":
-            continue
-        mapping: dict[str, int] = {}
-        for col_idx, name in enumerate(cells):
-            canonical = HEADER_ALIASES.get(name)
-            if canonical and canonical not in mapping:
-                mapping[canonical] = col_idx
-        if {"id", "type", "time", "amount"} <= mapping.keys():
+        mapping = _row_column_map(rows[index])
+        if required <= mapping.keys() and ("id" in mapping or "symbol" in mapping or "comment" in mapping):
+            # Prefer rows that look like real headers (have type+time+amount).
+            if "id" not in mapping:
+                # Synthesize sequential ids later if missing.
+                mapping["id"] = -1
             return index, mapping
+
+    preview = []
+    for row in rows[:8]:
+        preview.append(" | ".join(_cell(row, i) for i in range(min(6, len(row)))))
+    preview_text = "\n".join(f"  row {i}: {line}" for i, line in enumerate(preview)) or "  (empty)"
     raise ValueError(
-        "Could not find a transaction header row (expected columns like "
-        "ID;Type;Time;Comment;Symbol;Amount or ID;Type;Time;Symbol;Comment;Amount)."
+        "Could not find a transaction header row.\n"
+        "Supported headers include:\n"
+        "  • ID;Type;Time;Comment;Symbol;Amount\n"
+        "  • ID;Type;Time;Symbol;Comment;Amount\n"
+        "  • Type;Ticker;Instrument;Time;Amount;ID;Comment;Product  (XTB 2025+)\n"
+        f"First rows of the file were:\n{preview_text}"
     )
 
 
 def _currency_hint_from_path(path: Path) -> str | None:
     name = path.name.upper()
-    if "USD" in name:
+    # Prefer explicit currency tokens; IKE/IKZE cash is PLN.
+    if re.search(r"(^|[_-])USD([_-]|$)", name) or "USD" in name:
         return "USD"
-    if "EURO" in name or "EUR" in name:
+    if re.search(r"(^|[_-])EUR([_-]|$)", name) or "EURO" in name or "EUR" in name:
         return "EUR"
-    if "PLN" in name:
+    if "IKE" in name or "IKZE" in name or "PLN" in name:
         return "PLN"
     return None
 
 
+def _currency_from_comments(rows: list[list[object]], header_idx: int, columns: dict[str, int]) -> str | None:
+    """Infer account currency from conversion comments or ticker suffixes."""
+    comment_col = columns.get("comment", -1)
+    symbol_col = columns.get("symbol", -1)
+    for row in rows[header_idx + 1 : header_idx + 80]:
+        comment = _cell(row, comment_col)
+        if comment:
+            currency = transfer_target_currency(comment)
+            if currency:
+                return currency
+        symbol = _cell(row, symbol_col)
+        if symbol and "." in symbol:
+            suffix = symbol.rsplit(".", 1)[-1].upper()
+            if suffix in {"US", "USD"}:
+                return "USD"
+            if suffix in {"DE", "FR", "NL", "ES", "IT", "PT", "BE", "AT", "IE", "EUR"}:
+                return "EUR"
+            if suffix in {"UK", "GB", "LSE"}:
+                return "GBP"
+            if suffix in {"PL", "WSE"}:
+                return "PLN"
+    return None
+
+
+def _account_id_from_preamble(rows: list[list[object]], header_idx: int) -> str | None:
+    for row in rows[:header_idx]:
+        first = _normalize_header_cell(_cell(row, 0))
+        if "account" in first and len(row) > 1:
+            value = _cell(row, 1)
+            if value.isdigit() and len(value) >= 5:
+                return value
+        # Sometimes "Account number;12345678" is a single joined feel — scan cells.
+        for col_idx in range(len(row)):
+            value = _cell(row, col_idx)
+            if value.isdigit() and len(value) >= 6:
+                return value
+    return None
+
+
 def _account_id_from_rows(rows: list[list[object]], history_start: int) -> str | None:
-    account_col = None
     for row in rows[: max(history_start, 0)]:
         cells = [_cell(row, i) for i in range(len(row))]
         if "Account" in cells:
@@ -228,14 +335,13 @@ def _account_id_from_rows(rows: list[list[object]], history_start: int) -> str |
     return None
 
 
-def _account_id_from_comments(transactions_preview: list[str]) -> str | None:
-    # Prefer "to: <id>" from currency conversion / transfer comments.
+def _account_id_from_comments(comments: list[str]) -> str | None:
     to_re = re.compile(r"\bto[:\s]+(\d{6,})", re.IGNORECASE)
-    for comment in transactions_preview:
+    for comment in comments:
         match = to_re.search(comment)
         if match:
             return match.group(1)
-    for comment in transactions_preview:
+    for comment in comments:
         match = ACCOUNT_ID_RE.search(comment)
         if match:
             return match.group(1)
@@ -245,30 +351,35 @@ def _account_id_from_comments(transactions_preview: list[str]) -> str | None:
 def _parse_metadata(
     rows: list[list[object]],
     history_start: int,
+    header_idx: int,
     currency_hint: str | None,
     path: Path,
+    columns: dict[str, int] | None = None,
 ) -> dict:
-    account_id = _account_id_from_rows(rows, history_start) if history_start > 0 else None
+    account_id = _account_id_from_preamble(rows, header_idx)
+    if not account_id and history_start:
+        account_id = _account_id_from_rows(rows, history_start)
+
     currency = currency_hint
     holder_name = None
     export_date = None
     balance = equity = margin = free_margin = None
-    currency_col = None
 
-    for row in rows[: max(history_start, 0)]:
+    scan_until = max(history_start or 0, header_idx)
+    for row in rows[:scan_until]:
         cells = [_cell(row, i) for i in range(len(row))]
         if "Currency" in cells and currency is None:
             currency_col = cells.index("Currency")
             row_idx = rows.index(row)
-            for data_row in rows[row_idx + 1 : history_start]:
+            for data_row in rows[row_idx + 1 : scan_until]:
                 value = _cell(data_row, currency_col)
-                if value.upper() in {"USD", "EUR", "PLN"}:
+                if value.upper() in {"USD", "EUR", "PLN", "GBP"}:
                     currency = value.upper()
                     break
         if "Name and surname" in cells and not holder_name:
             name_idx = cells.index("Name and surname")
             row_idx = rows.index(row)
-            if row_idx + 1 < history_start:
+            if row_idx + 1 < scan_until:
                 holder_name = _cell(rows[row_idx + 1], name_idx) or None
         if "Balance" in cells and "Equity" in cells:
             try:
@@ -290,8 +401,9 @@ def _parse_metadata(
             except ValueError:
                 pass
 
-    if not currency:
-        currency = currency_hint
+    if not currency and columns is not None:
+        currency = _currency_from_comments(rows, header_idx, columns)
+
     if not currency:
         raise ValueError(
             f"Could not determine account currency for {path.name}. "
@@ -299,7 +411,7 @@ def _parse_metadata(
         )
 
     return {
-        "account_id": account_id,  # may still be None — filled later
+        "account_id": account_id,
         "currency": currency.upper(),
         "holder_name": holder_name,
         "balance": balance,
@@ -318,14 +430,26 @@ def _parse_transactions(
     currency: str,
 ) -> list[Transaction]:
     transactions: list[Transaction] = []
+    synthetic_id = 0
     for row in rows[header_idx + 1 :]:
-        tx_id = _cell(row, columns["id"])
-        if not tx_id:
+        if not any(_cell(row, i) for i in range(len(row))):
             continue
-        if tx_id.startswith(TOTAL_MARKER):
+
+        # Stop at Total row (first cell or type cell).
+        first = _cell(row, 0)
+        type_cell = _cell(row, columns["type"])
+        if first.startswith(TOTAL_MARKER) or type_cell.startswith(TOTAL_MARKER):
             break
 
-        raw_type = _cell(row, columns["type"])
+        if columns["id"] >= 0:
+            tx_id = _cell(row, columns["id"])
+        else:
+            tx_id = ""
+        if not tx_id:
+            synthetic_id += 1
+            tx_id = f"auto-{synthetic_id}"
+
+        raw_type = type_cell
         time_raw = row[columns["time"]] if columns["time"] < len(row) else ""
         comment = _cell(row, columns.get("comment", -1))
         symbol = _cell(row, columns.get("symbol", -1)) or None
@@ -370,24 +494,25 @@ def _parse_transactions(
 
 
 def load_csv(path: str | Path) -> Account:
-    """Load one XTB export (legacy CSV, modern flat CSV, or XLSX)."""
+    """Load one XTB export (legacy / modern 2024 / V2 2025+ / XLSX)."""
     path = Path(path)
     rows = _read_rows(path)
     if not rows:
         raise ValueError(f"No rows found in {path}")
 
     history_start = _find_history_marker(rows)
-    header_search_from = history_start if history_start is not None else 0
+    header_search_from = 0  # V2 header sits after preamble; scan from top is fine
     header_idx, columns = _find_transaction_header(rows, start=header_search_from)
 
     meta = _parse_metadata(
         rows,
         history_start if history_start is not None else 0,
+        header_idx,
         currency_hint=_currency_hint_from_path(path),
         path=path,
+        columns=columns,
     )
 
-    # Peek comments to recover account id when metadata is absent (modern flat CSV).
     if not meta["account_id"]:
         preview_comments = [
             _cell(row, columns.get("comment", -1))
@@ -395,7 +520,6 @@ def load_csv(path: str | Path) -> Account:
         ]
         meta["account_id"] = _account_id_from_comments(preview_comments)
     if not meta["account_id"]:
-        # Last resort: stable id derived from filename + currency.
         meta["account_id"] = f"{path.stem}-{meta['currency']}"
 
     transactions = _parse_transactions(
@@ -416,7 +540,7 @@ def load_accounts(paths: list[str | Path]) -> list[Account]:
 
 
 def discover_export_files(data_dir: str | Path) -> list[Path]:
-    """Find XTB exports in ``data_dir`` (CSV and XLSX), newest names first."""
+    """Find XTB exports in ``data_dir`` (CSV and XLSX)."""
     data_dir = Path(data_dir)
     patterns = (
         "XTB_*_account_cs.csv",
@@ -425,12 +549,16 @@ def discover_export_files(data_dir: str | Path) -> list[Path]:
         "XTB_*.csv",
         "XTB_*.xlsx",
         "*cash*ops*.csv",
+        "*cashOperations*.csv",
+        "*Cash*Operation*.csv",
         "*CASH*OPERATION*.csv",
+        "xStation*_cashOperations*.csv",
+        "account_*.xlsx",
+        "account_*.csv",
     )
     found: dict[str, Path] = {}
     for pattern in patterns:
         for path in data_dir.glob(pattern):
-            if path.is_file():
+            if path.is_file() and not path.name.startswith("~"):
                 found[path.name.lower()] = path
-    # Prefer one file per currency hint when duplicates exist.
     return sorted(found.values(), key=lambda p: p.name.lower())
