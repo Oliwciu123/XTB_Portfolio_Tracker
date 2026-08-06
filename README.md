@@ -34,37 +34,36 @@ python -c "import xtb_analyzer; print(xtb_analyzer.__file__)"
 
 ## Usage
 
-1. Export cash operation history from XTB (CSV) for each account.
-2. Place files in `data/` (e.g. `XTB_USD_account_cs.csv`, `XTB_EURO_account_cs.csv`).
+1. Export the full account history from XTB for each currency (USD / EUR / …).
+2. Place files in `data/` using these names (recommended):
+   - `XTB_USD_cs.xlsx`
+   - `XTB_EURO_cs.xlsx`
+   
+   How to export: xStation → *Historia* / *Account history* → **Eksportuj jako XLSX**
+   (full account report). The `CASH OPERATION HISTORY` sheet is read automatically.
 
-### HTML report (recommended)
+   Other formats still work as a fallback (Cash Operations CSV, legacy multi-section CSV),
+   but when `XTB_*_cs.xlsx` files are present they take priority and leftover CSV junk in
+   `data/` is ignored so it cannot break the report.
+3. Generate the report:
 
 ```bash
 python -m xtb_analyzer --currency pln --open
 ```
 
-Options: `--data-dir`, `--output-dir`, `--currency pln|usd|eur`, `--no-cache`, `--no-live`, `--open`.
-The report is written to `output/report.html` — a self-contained, interactive page (charts require internet for the plotly.js CDN).
-
-### Notebook
-
-```bash
-jupyter notebook notebooks/portfolio_analysis.ipynb
-```
-
-Run all cells. Results (CSV, JSON and the HTML report) are saved to `output/`.
+Or open the notebook and run all cells. Replacing files in `data/` and re-running is enough — the whole pipeline rebuilds from the latest exports.
 
 ## Features
 
 ### Returns (three methods, easy to compare)
 
 - **ROI** — simple return on deposited capital (value ÷ deposits − 1)
-- **MWR / XIRR** — money-weighted return of the actual cash flows (bisection solver); shown for the holding period, with the annualized XIRR alongside
+- **MWR / XIRR** — annualized money-weighted return of the actual cash flows (bisection solver)
 - **TWR** — time-weighted return with deposits neutralized; cumulative and annualized, directly comparable with indices
 
 ### Benchmarks
 
-- **Deposit-matched benchmarks** — S&P 500 Total Return (^SP500TR), NASDAQ 100 (^NDX) and MSCI ACWI (ACWI ETF proxy): every deposit buys the index on the deposit day, so timing and size of flows match your portfolio exactly
+- **Deposit-matched benchmarks** — S&P 500 Total Return (^SP500TR) and NASDAQ 100 (^NDX): every deposit buys the index on the deposit day, so timing and size of flows match your portfolio exactly
 
 ### FX attribution
 
@@ -74,7 +73,7 @@ Run all cells. Results (CSV, JSON and the HTML report) are saved to `output/`.
 
 - Annualized volatility, Sharpe, Sortino, Calmar, VaR 95%
 - Max drawdown with dates, drawdown chart, monthly returns heatmap, rolling volatility
-- Beta, alpha and correlation vs S&P 500 TR, NASDAQ 100 and MSCI ACWI
+- Beta, alpha and correlation vs S&P 500 TR and NASDAQ 100
 
 ### Portfolio structure & costs
 
