@@ -851,69 +851,6 @@ def plot_fx_attribution_waterfall(attribution: FxAttribution) -> go.Figure:
     return fig
 
 
-def plot_allocation_donut(
-    labels: list[str],
-    values: list[float],
-    title: str,
-    *,
-    center_label: str | None = None,
-    color_offset: int = 0,
-) -> go.Figure:
-    """Single donut: percentages inside slices, legend below, optional center total.
-
-    Inside labels + a legend are used instead of outside labels, because outside
-    labels with ``automargin`` collapse the chart in narrow containers.
-    """
-    colors = [PIE_COLORS[(color_offset + i) % len(PIE_COLORS)] for i in range(len(labels))]
-    fig = go.Figure(
-        go.Pie(
-            labels=labels,
-            values=values,
-            hole=0.55,
-            sort=True,
-            direction="clockwise",
-            textinfo="percent",
-            textposition="inside",
-            insidetextorientation="horizontal",
-            textfont=dict(size=13, color="#0b0e14", family="Inter, 'Segoe UI', Arial, sans-serif"),
-            marker=dict(colors=colors, line=dict(color="#151a23", width=2)),
-            hovertemplate="<b>%{label}</b><br>%{value:,.0f} PLN (%{percent})<extra></extra>",
-        )
-    )
-    annotations = []
-    if center_label:
-        annotations.append(
-            dict(
-                text=center_label,
-                x=0.5,
-                y=0.5,
-                showarrow=False,
-                font=dict(size=14, color=CHART_COLORS["muted"]),
-            )
-        )
-    fig.update_layout(
-        {
-            **CHART_LAYOUT,
-            "title": dict(text=title, x=0, font=dict(size=16)),
-            "height": 460,
-            "showlegend": True,
-            "legend": dict(
-                orientation="h",
-                yanchor="top",
-                y=-0.02,
-                xanchor="center",
-                x=0.5,
-                font=dict(size=12),
-                bgcolor="rgba(0,0,0,0)",
-            ),
-            "margin": dict(l=20, r=20, t=64, b=100),
-            "annotations": annotations,
-            "uniformtext": dict(minsize=11, mode="hide"),
-        }
-    )
-    return fig
-
-
 def _group_top_n(frame: pd.DataFrame, label_col: str, value_col: str, top_n: int) -> pd.DataFrame:
     frame = frame.sort_values(value_col, ascending=False)
     if len(frame) <= top_n:
@@ -923,8 +860,66 @@ def _group_top_n(frame: pd.DataFrame, label_col: str, value_col: str, top_n: int
     return pd.concat([head, rest], ignore_index=True)
 
 
-def plot_holdings_allocation(positions: pd.DataFrame, top_n: int = 8) -> go.Figure:
-    """Donut: allocation by position (top N + rest)."""
+def plot_allocation_donut(
+    labels: list[str],
+    values: list[float],
+    title: str,
+    *,
+    color_offset: int = 0,
+) -> go.Figure:
+    """Donut that never collapses in narrow cards.
+
+    The pie uses a fixed domain on the left; the legend sits on the right.
+    Percentages only appear inside large enough slices.
+    """
+    colors = [PIE_COLORS[(color_offset + i) % len(PIE_COLORS)] for i in range(len(labels))]
+    total = sum(values) or 1.0
+    # Show percent text only for slices big enough to hold it (~8%+).
+    text = [f"{value / total * 100:.1f}%" if value / total >= 0.08 else "" for value in values]
+
+    fig = go.Figure(
+        go.Pie(
+            labels=labels,
+            values=values,
+            hole=0.42,
+            sort=False,
+            direction="clockwise",
+            text=text,
+            textinfo="text",
+            textposition="inside",
+            insidetextorientation="horizontal",
+            textfont=dict(size=14, color="#0b0e14", family="Inter, 'Segoe UI', Arial, sans-serif"),
+            marker=dict(colors=colors, line=dict(color="#151a23", width=2.5)),
+            domain=dict(x=[0.0, 0.58], y=[0.05, 0.95]),
+            hovertemplate="<b>%{label}</b><br>%{value:,.0f} PLN (%{percent})<extra></extra>",
+        )
+    )
+    fig.update_layout(
+        {
+            **CHART_LAYOUT,
+            "title": dict(text=title, x=0, font=dict(size=16)),
+            "height": 360,
+            "showlegend": True,
+            "legend": dict(
+                orientation="v",
+                yanchor="middle",
+                y=0.5,
+                xanchor="left",
+                x=0.62,
+                font=dict(size=13, color=CHART_COLORS["text"]),
+                bgcolor="rgba(0,0,0,0)",
+                itemclick=False,
+                itemdoubleclick=False,
+                traceorder="normal",
+            ),
+            "margin": dict(l=16, r=16, t=56, b=16),
+        }
+    )
+    return fig
+
+
+def plot_holdings_allocation(positions: pd.DataFrame, top_n: int = 10) -> go.Figure:
+    """Horizontal bar chart of position weights — readable with any number of holdings."""
     if positions.empty:
         fig = go.Figure()
         fig.update_layout(**CHART_LAYOUT, title="Struktura portfela – brak danych")
@@ -932,13 +927,46 @@ def plot_holdings_allocation(positions: pd.DataFrame, top_n: int = 8) -> go.Figu
 
     by_symbol = positions.groupby("symbol", as_index=False)["market_value_pln"].sum()
     by_symbol = _group_top_n(by_symbol, "symbol", "market_value_pln", top_n)
-    total = float(by_symbol["market_value_pln"].sum())
-    return plot_allocation_donut(
-        by_symbol["symbol"].tolist(),
-        by_symbol["market_value_pln"].tolist(),
-        "Alokacja wg pozycji",
-        center_label=f"{_polish_decimal(total, 0)}<br>PLN",
+    by_symbol = by_symbol.sort_values("market_value_pln", ascending=True)
+    total = float(by_symbol["market_value_pln"].sum()) or 1.0
+    weights = by_symbol["market_value_pln"] / total * 100
+    colors = [PIE_COLORS[i % len(PIE_COLORS)] for i in range(len(by_symbol))][::-1]
+
+    fig = go.Figure(
+        go.Bar(
+            x=weights.tolist(),
+            y=by_symbol["symbol"].tolist(),
+            orientation="h",
+            marker=dict(color=colors, line=dict(width=0), cornerradius=4),
+            text=[f"{w:.1f}%  ·  {_polish_decimal(v, 0)} PLN" for w, v in zip(weights, by_symbol["market_value_pln"])],
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=12, color=CHART_COLORS["text"]),
+            hovertemplate="<b>%{y}</b><br>%{x:.1f}% · %{customdata:,.0f} PLN<extra></extra>",
+            customdata=by_symbol["market_value_pln"].tolist(),
+        )
     )
+    fig.update_layout(
+        {
+            **CHART_LAYOUT,
+            "title": dict(
+                text=f"Alokacja wg pozycji<br><sup style='color:#94a3b8'>Łącznie {_polish_decimal(total, 0)} PLN</sup>",
+                x=0,
+            ),
+            "height": max(320, 56 + 36 * len(by_symbol)),
+            "showlegend": False,
+            "margin": dict(l=90, r=140, t=70, b=40),
+            "xaxis": dict(
+                title="Udział w portfelu (%)",
+                range=[0, max(weights.max() * 1.35, 10)],
+                gridcolor=CHART_COLORS["grid"],
+                ticksuffix="%",
+                zeroline=False,
+            ),
+            "yaxis": dict(title="", automargin=True, tickfont=dict(size=13)),
+        }
+    )
+    return fig
 
 
 def plot_currency_allocation(positions: pd.DataFrame) -> go.Figure:
@@ -947,7 +975,11 @@ def plot_currency_allocation(positions: pd.DataFrame) -> go.Figure:
         fig = go.Figure()
         fig.update_layout(**CHART_LAYOUT, title="Alokacja walutowa – brak danych")
         return fig
-    by_currency = positions.groupby("currency", as_index=False)["market_value_pln"].sum()
+    by_currency = (
+        positions.groupby("currency", as_index=False)["market_value_pln"]
+        .sum()
+        .sort_values("market_value_pln", ascending=False)
+    )
     return plot_allocation_donut(
         by_currency["currency"].tolist(),
         by_currency["market_value_pln"].tolist(),
@@ -999,6 +1031,7 @@ def plot_sector_allocation(alloc: pd.DataFrame) -> go.Figure:
     unknown = frame["sector"] == "Unknown"
     frame = pd.concat([frame[~unknown], frame[unknown]], ignore_index=True)
     frame.loc[frame["sector"] == "Unknown", "sector"] = "Nieznany"
+    frame = frame.sort_values("market_value_pln", ascending=False)
 
     return plot_allocation_donut(
         frame["sector"].tolist(),

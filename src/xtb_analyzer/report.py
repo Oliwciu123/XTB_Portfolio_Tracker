@@ -438,10 +438,13 @@ h3 { font-size: 16px; font-weight: 600; margin: 26px 0 4px; color: var(--muted);
 
 .chart {
   background: var(--card); border: 1px solid var(--border);
-  border-radius: 14px; padding: 12px 10px; margin: 18px 0; overflow: hidden;
+  border-radius: 14px; padding: 12px 10px; margin: 18px 0; overflow: visible;
 }
-.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; }
+.chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .chart-grid .chart { margin: 0; }
+@media (max-width: 800px) {
+  .chart-grid { grid-template-columns: 1fr; }
+}
 
 .table-wrap {
   border: 1px solid var(--border); border-radius: 14px;
@@ -477,12 +480,13 @@ def render_html_report(data: ReportData) -> str:
 
     benchmark_fig = build_return_comparison_figure(data.nav, data.benchmarks, data.currency)
 
-    structure_grid = (
-        "<div class='chart-grid'>"
-        + _chart(plot_holdings_allocation(data.positions))
+    structure_body = (
+        _chart(plot_holdings_allocation(data.positions))
+        + "<div class='chart-grid'>"
         + _chart(plot_currency_allocation(data.positions))
         + _chart(plot_sector_allocation(data.sector_alloc))
         + "</div>"
+        + _table_html(format_positions_table(data.positions))
     )
 
     sections = [
@@ -526,7 +530,7 @@ def render_html_report(data: ReportData) -> str:
         _section(
             "struktura",
             "Struktura portfela",
-            structure_grid + _table_html(format_positions_table(data.positions)),
+            structure_body,
         ),
         _section(
             "dochody",
