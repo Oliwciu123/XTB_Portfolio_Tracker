@@ -193,7 +193,42 @@ def _sheet_rows(sheet) -> list[list[object]]:
         while cells and cells[0] == "":
             cells = cells[1:]
         rows.append(cells)
-    return rows
+    return _explode_delimited_rows(rows)
+
+
+def _explode_delimited_rows(rows: list[list[object]]) -> list[list[object]]:
+    """Split rows that store an entire CSV line in one cell (common XTB V2→XLSX export)."""
+    nonempty = [row for row in rows if any(str(c).strip() for c in row)]
+    if not nonempty:
+        return rows
+
+    single_delim = 0
+    for row in nonempty[:40]:
+        if len(row) == 1 and isinstance(row[0], str) and row[0].count(";") >= 2:
+            single_delim += 1
+        elif (
+            len(row) >= 1
+            and isinstance(row[0], str)
+            and row[0].count(";") >= 2
+            and sum(1 for c in row[1:] if str(c).strip()) == 0
+        ):
+            single_delim += 1
+
+    if single_delim < max(3, len(nonempty[:40]) // 2):
+        return rows
+
+    exploded: list[list[object]] = []
+    for row in rows:
+        if not row:
+            exploded.append(row)
+            continue
+        first = row[0]
+        if isinstance(first, str) and first.count(";") >= 2:
+            # Keep only the delimited first cell (rest are empty padding).
+            exploded.append([part.strip() for part in first.split(";")])
+        else:
+            exploded.append(row)
+    return exploded
 
 
 def _sheet_has_cash_ops(rows: list[list[object]]) -> bool:
