@@ -809,29 +809,40 @@ def _is_positions_only_file(path: Path) -> bool:
     return False
 
 
+def _looks_like_currency_cs_export(path: Path) -> bool:
+    """True for names like XTB_USD_cs.xlsx / XTB_EURO_cs.xlsx / xtb-eur-cs.XLSX."""
+    stem = path.stem.lower().replace("-", "_")
+    if not stem.startswith("xtb"):
+        return False
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xls", ".csv"}:
+        return False
+    has_cs = stem.endswith("_cs") or "_cs_" in stem or stem.endswith("cs")
+    has_currency = any(token in stem for token in ("usd", "euro", "eur", "pln"))
+    return has_cs and has_currency
+
+
 def _is_canonical_account_report(path: Path) -> bool:
     """Match preferred names: XTB_USD_cs.xlsx, XTB_EURO_cs.xlsx, XTB_*_account*.xlsx."""
     name = path.name
     if re.match(r"(?i)XTB_.+_cs\.(xlsx|xlsm|xls|csv)$", name):
         return True
+    if re.match(r"(?i)XTB_.+cs\.(xlsx|xlsm|xls|csv)$", name) and re.search(
+        r"(?i)(usd|euro|eur|pln)", name
+    ):
+        return True
     if re.match(r"(?i)XTB_.+_account.*\.(xlsx|xlsm|xls|csv)$", name):
         return True
-    return False
+    return _looks_like_currency_cs_export(path)
 
 
 def discover_export_files(data_dir: str | Path) -> list[Path]:
     """Find XTB Cash Operations exports in ``data_dir`` (CSV and XLSX).
 
     Preferred (canonical) names — used exclusively when present and parseable:
-      ``XTB_USD_cs.xlsx``, ``XTB_EURO_cs.xlsx`` (also ``XTB_*_account*.xlsx``).
+      ``XTB_USD_cs.xlsx``, ``XTB_EURO_cs.xlsx`` / ``XTB_EUR_cs.xlsx``.
 
-    Other Cash Operations CSV/XLSX files are used only as a fallback. Closed/Open
-    Positions exports and unparseable leftovers in ``data/`` are skipped so they
-    cannot break the report pipeline.
-
-    If canonical ``XTB_*_cs.xlsx`` files exist but cannot be parsed, raise ``ValueError``
-    with the underlying reason (missing openpyxl, OneDrive stub, wrong sheet, …)
-    instead of returning an empty list.
+    If any of those canonical files is present but unreadable, raise ``ValueError``
+    listing every failure. Never silently keep only the subset that parsed.
     """
     data_dir = Path(data_dir)
     if not data_dir.is_dir():
@@ -842,6 +853,7 @@ def discover_export_files(data_dir: str | Path) -> list[Path]:
         "XTB_*_cs.xlsm",
         "XTB_*_cs.xls",
         "XTB_*_cs.csv",
+        "XTB_*cs.xlsx",
         "XTB_*_account*.xlsx",
         "XTB_*_account*.csv",
         "XTB_*_cash*.csv",
@@ -866,30 +878,47 @@ def discover_export_files(data_dir: str | Path) -> list[Path]:
                 continue
             candidates[path.name.lower()] = path
 
+    # Directory scan catches odd casing / unicode underscores missed by glob.
+    for path in data_dir.iterdir():
+        if not path.is_file() or path.name.startswith("~"):
+            continue
+        if POSITIONS_FILENAME_RE.search(path.name):
+            continue
+        if _is_canonical_account_report(path) or _looks_like_currency_cs_export(path):
+            candidates[path.name.lower()] = path
+
     statuses = {path: _cash_operations_status(path) for path in candidates.values()}
-    parseable = [p for p, (ok, _) in statuses.items() if ok]
-    canonical = [p for p in parseable if _is_canonical_account_report(p)]
-    named_canonical = [p for p in candidates.values() if _is_canonical_account_report(p)]
+    named_canonical = sorted(
+        (
+            p
+            for p in candidates.values()
+            if (_is_canonical_account_report(p) or _looks_like_currency_cs_export(p))
+            # Positions leftovers named like XTB_*_account*.csv must not block USD/EURO.
+            and "Closed/Open Positions" not in statuses[p][1]
+        ),
+        key=lambda p: p.name.lower(),
+    )
 
-    if canonical:
-        return sorted(canonical, key=lambda p: p.name.lower())
-    if parseable:
-        return sorted(parseable, key=lambda p: p.name.lower())
-
-    # Canonical files present but unreadable → fail loudly with real reasons.
     if named_canonical:
-        details = []
-        for path in sorted(named_canonical, key=lambda p: p.name.lower()):
-            ok, reason = statuses.get(path, (False, "unknown"))
-            details.append(f"  • {path.name} ({path.stat().st_size} B): {reason}")
-        raise ValueError(
-            "Znaleziono XTB_*_cs.xlsx, ale nie udało się ich odczytać:\n"
-            + "\n".join(details)
-            + "\n\nJeśli widzisz ImportError openpyxl: "
-            "python -m pip install openpyxl  (ten sam Python co kernel) "
-            "i Restart Kernel.\n"
-            "Jeśli plik ma 0 bajtów / błąd zip: OneDrive → "
-            "Zawsze zachowuj na tym urządzeniu, albo wyeksportuj ponownie z xStation."
-        )
+        ok = [p for p in named_canonical if statuses[p][0]]
+        failed = [(p, statuses[p][1]) for p in named_canonical if not statuses[p][0]]
+        if failed:
+            details = [
+                f"  • {p.name} ({p.stat().st_size} B): {reason}" for p, reason in failed
+            ]
+            ok_names = ", ".join(p.name for p in ok) or "(żaden)"
+            raise ValueError(
+                "Nie wszystkie pliki XTB_*_cs.xlsx dały się odczytać.\n"
+                f"OK: {ok_names}\n"
+                "Błędy:\n"
+                + "\n".join(details)
+                + "\n\nPotrzebne są oba konta (USD i EURO). "
+                "Napraw pliki z błędem (openpyxl / OneDrive → „Zawsze zachowuj na tym urządzeniu” "
+                "/ ponowny eksport z xStation) i uruchom ponownie."
+            )
+        return ok
 
-    return []
+    return sorted(
+        (p for p, (success, _) in statuses.items() if success),
+        key=lambda p: p.name.lower(),
+    )

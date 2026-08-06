@@ -241,8 +241,27 @@ def test_discover_raises_with_reason_for_unreadable_cs_xlsx(tmp_path: Path):
     """Canonical XTB_*_cs.xlsx that cannot be opened must not fail silently."""
     bad = tmp_path / "XTB_USD_cs.xlsx"
     bad.write_bytes(b"not-an-xlsx")
-    with pytest.raises(ValueError, match="nie udało się ich odczytać"):
+    with pytest.raises(ValueError, match="Nie wszystkie pliki|nie udało się"):
         discover_export_files(tmp_path)
+
+
+def test_discover_does_not_silently_drop_failed_euro(tmp_path: Path):
+    """If USD parses but EURO does not, raise — never return only USD."""
+    import shutil
+
+    shutil.copy(FIXTURES / "legacy_usd_account.xlsx", tmp_path / "XTB_USD_cs.xlsx")
+    (tmp_path / "XTB_EURO_cs.xlsx").write_bytes(b"not-a-real-xlsx-but-long-enough!!!!")
+    with pytest.raises(ValueError, match="XTB_EURO_cs.xlsx"):
+        discover_export_files(tmp_path)
+
+
+def test_discover_returns_both_usd_and_euro(tmp_path: Path):
+    import shutil
+
+    shutil.copy(FIXTURES / "legacy_usd_account.xlsx", tmp_path / "XTB_USD_cs.xlsx")
+    shutil.copy(FIXTURES / "legacy_eur_account.xlsx", tmp_path / "XTB_EURO_cs.xlsx")
+    found = [p.name for p in discover_export_files(tmp_path)]
+    assert found == ["XTB_EURO_cs.xlsx", "XTB_USD_cs.xlsx"]
 
 
 def test_cash_operations_status_reports_openpyxl_hint(tmp_path: Path, monkeypatch):
