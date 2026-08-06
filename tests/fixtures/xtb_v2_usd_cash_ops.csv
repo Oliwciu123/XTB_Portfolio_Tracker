@@ -1,0 +1,18 @@
+Account number;90000001
+Cash Operations
+Date from (UTC);2024-01-01 00:00:00
+Date to (UTC);2024-09-01 00:00:00
+Type;Ticker;Instrument;Time;Amount;ID;Comment;Product
+Transfer;;;2024-01-02 09:00:00;1000,00;80000000;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;My Trades
+Stock purchase;MSFT.US;Synthetic instrument;2024-01-02 10:00:00;-100,00;80000001;OPEN BUY 1 @ 100.00;My Trades
+Stock purchase;AAPL.US;Synthetic instrument;2024-01-02 11:00:00;-100,00;80000002;OPEN BUY 2 @ 50.00;My Trades
+Stock purchase;MSFT.US;Synthetic instrument;2024-01-02 12:00:00;-50,00;80000003;OPEN BUY 0.5/1.5 @ 100.00;My Trades
+Stock sell;MSFT.US;Synthetic instrument;2024-01-02 13:00:00;50,00;80000004;CLOSE BUY 0.5/1.5 @ 120.00;My Trades
+Close trade;MSFT.US;Synthetic instrument;2024-01-02 14:00:00;10,00;80000005;Profit of position #70000001;My Trades
+Dividend;AAPL.US;Synthetic instrument;2024-01-02 15:00:00;3,00;80000006;Synthetic cash dividend;My Trades
+Withholding tax;AAPL.US;Synthetic instrument;2024-01-02 16:00:00;-0,45;80000007;Synthetic dividend withholding tax;My Trades
+Free funds interest;;;2024-01-02 17:00:00;1,00;80000008;Synthetic free-funds interest;My Trades
+Interest tax;;;2024-01-02 18:00:00;-0,19;80000009;Synthetic interest withholding tax;My Trades
+Transfer;;;2024-02-02 09:00:00;1000,00;80000010;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;My Trades
+Stock purchase;MSFT.US;Synthetic instrument;2024-02-03 10:00:00;-75,00;81000001;OPEN BUY 0.75 @ 100.00;My Trades
+Dividend;AAPL.US;Synthetic instrument;2024-02-05 10:00:00;1,00;81000002;Synthetic cash dividend;My Trades

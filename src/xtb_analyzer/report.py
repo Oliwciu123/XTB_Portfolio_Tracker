@@ -34,7 +34,7 @@ from xtb_analyzer.charts import (
 from xtb_analyzer.flows import analyze_conversion_losses, attach_deposits_to_nav, conversion_summary
 from xtb_analyzer.metrics import format_positions_table
 from xtb_analyzer.models import Account
-from xtb_analyzer.parser import load_accounts
+from xtb_analyzer.parser import discover_export_files, load_accounts
 from xtb_analyzer.portfolio import build_nav_series
 from xtb_analyzer.prices import fetch_benchmarks
 from xtb_analyzer.returns import ReturnMeasures, compute_return_measures, twr_daily_returns
@@ -438,10 +438,13 @@ h3 { font-size: 16px; font-weight: 600; margin: 26px 0 4px; color: var(--muted);
 
 .chart {
   background: var(--card); border: 1px solid var(--border);
-  border-radius: 14px; padding: 12px 10px; margin: 18px 0; overflow: hidden;
+  border-radius: 14px; padding: 12px 10px; margin: 18px 0; overflow: visible;
 }
-.chart-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 18px; }
+.chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
 .chart-grid .chart { margin: 0; }
+@media (max-width: 800px) {
+  .chart-grid { grid-template-columns: 1fr; }
+}
 
 .table-wrap {
   border: 1px solid var(--border); border-radius: 14px;
@@ -477,12 +480,13 @@ def render_html_report(data: ReportData) -> str:
 
     benchmark_fig = build_return_comparison_figure(data.nav, data.benchmarks, data.currency)
 
-    structure_grid = (
-        "<div class='chart-grid'>"
-        + _chart(plot_holdings_allocation(data.positions))
+    structure_body = (
+        _chart(plot_holdings_allocation(data.positions))
+        + "<div class='chart-grid'>"
         + _chart(plot_currency_allocation(data.positions))
         + _chart(plot_sector_allocation(data.sector_alloc))
         + "</div>"
+        + _table_html(format_positions_table(data.positions))
     )
 
     sections = [
@@ -526,7 +530,7 @@ def render_html_report(data: ReportData) -> str:
         _section(
             "struktura",
             "Struktura portfela",
-            structure_grid + _table_html(format_positions_table(data.positions)),
+            structure_body,
         ),
         _section(
             "dochody",
@@ -604,9 +608,19 @@ def generate_report(
     data_dir = Path(data_dir)
     output_dir = Path(output_dir)
 
-    csv_files = sorted(data_dir.glob("XTB_*_account_cs.csv"))
+    try:
+        csv_files = discover_export_files(data_dir)
+    except ValueError as exc:
+        from xtb_analyzer.parser import describe_export_discovery
+
+        raise FileNotFoundError(str(exc) + "\n\n" + describe_export_discovery(data_dir)) from exc
     if not csv_files:
-        raise FileNotFoundError(f"Brak plików CSV w {data_dir.resolve()}. Wklej eksporty XTB (XTB_*_account_cs.csv).")
+        from xtb_analyzer.parser import describe_export_discovery
+
+        raise FileNotFoundError(
+            f"Brak eksportów XTB w {data_dir.resolve()}.\n"
+            + describe_export_discovery(data_dir)
+        )
 
     accounts = load_accounts(csv_files)
     data = collect_report_data(accounts, currency=currency, use_cache=use_cache, refresh_latest=refresh_latest)

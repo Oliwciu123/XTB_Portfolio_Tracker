@@ -1,0 +1,84 @@
+Account;Currency;Name and surname;Balance;Equity;Margin;Free margin
+90000001;USD;Synthetic Investor;6506.88;8346.88;0;8346.88
+CASH OPERATION HISTORY
+ID;Type;Time;Comment;Symbol;Amount
+80000000;Transfer;2024-01-02 09:00:00;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;;1000.00
+80000001;Stock purchase;2024-01-02 10:00:00;OPEN BUY 1 @ 100.00;MSFT.US;-100.00
+80000002;Stock purchase;2024-01-02 11:00:00;OPEN BUY 2 @ 50.00;AAPL.US;-100.00
+80000003;Stock purchase;2024-01-02 12:00:00;OPEN BUY 0.5/1.5 @ 100.00;MSFT.US;-50.00
+80000004;Stock sell;2024-01-02 13:00:00;CLOSE BUY 0.5/1.5 @ 120.00;MSFT.US;50.00
+80000005;Close trade;2024-01-02 14:00:00;Profit of position #70000001;MSFT.US;10.00
+80000006;Dividend;2024-01-02 15:00:00;Synthetic cash dividend;AAPL.US;3.00
+80000007;Withholding tax;2024-01-02 16:00:00;Synthetic dividend withholding tax;AAPL.US;-0.45
+80000008;Free funds interest;2024-01-02 17:00:00;Synthetic free-funds interest;;1.00
+80000009;Interest tax;2024-01-02 18:00:00;Synthetic interest withholding tax;;-0.19
+80000010;Transfer;2024-02-02 09:00:00;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;;1000.00
+80000011;Stock purchase;2024-02-02 10:00:00;OPEN BUY 1 @ 100.00;MSFT.US;-100.00
+80000012;Stock purchase;2024-02-02 11:00:00;OPEN BUY 2 @ 50.00;AAPL.US;-100.00
+80000013;Stock purchase;2024-02-02 12:00:00;OPEN BUY 0.5/1.5 @ 100.00;MSFT.US;-50.00
+80000014;Stock sell;2024-02-02 13:00:00;CLOSE BUY 0.5/1.5 @ 120.00;MSFT.US;50.00
+80000015;Close trade;2024-02-02 14:00:00;Profit of position #70000002;MSFT.US;10.00
+80000016;Dividend;2024-02-02 15:00:00;Synthetic cash dividend;AAPL.US;3.00
+80000017;Withholding tax;2024-02-02 16:00:00;Synthetic dividend withholding tax;AAPL.US;-0.45
+80000018;Free funds interest;2024-02-02 17:00:00;Synthetic free-funds interest;;1.00
+80000019;Interest tax;2024-02-02 18:00:00;Synthetic interest withholding tax;;-0.19
+80000020;Transfer;2024-03-02 09:00:00;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;;1000.00
+80000021;Stock purchase;2024-03-02 10:00:00;OPEN BUY 1 @ 100.00;MSFT.US;-100.00
+80000022;Stock purchase;2024-03-02 11:00:00;OPEN BUY 2 @ 50.00;AAPL.US;-100.00
+80000023;Stock purchase;2024-03-02 12:00:00;OPEN BUY 0.5/1.5 @ 100.00;MSFT.US;-50.00
+80000024;Stock sell;2024-03-02 13:00:00;CLOSE BUY 0.5/1.5 @ 120.00;MSFT.US;50.00
+80000025;Close trade;2024-03-02 14:00:00;Profit of position #70000003;MSFT.US;10.00
+80000026;Dividend;2024-03-02 15:00:00;Synthetic cash dividend;AAPL.US;3.00
+80000027;Withholding tax;2024-03-02 16:00:00;Synthetic dividend withholding tax;AAPL.US;-0.45
+80000028;Free funds interest;2024-03-02 17:00:00;Synthetic free-funds interest;;1.00
+80000029;Interest tax;2024-03-02 18:00:00;Synthetic interest withholding tax;;-0.19
+80000030;Transfer;2024-04-02 09:00:00;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;;1000.00
+80000031;Stock purchase;2024-04-02 10:00:00;OPEN BUY 1 @ 100.00;MSFT.US;-100.00
+80000032;Stock purchase;2024-04-02 11:00:00;OPEN BUY 2 @ 50.00;AAPL.US;-100.00
+80000033;Stock purchase;2024-04-02 12:00:00;OPEN BUY 0.5/1.5 @ 100.00;MSFT.US;-50.00
+80000034;Stock sell;2024-04-02 13:00:00;CLOSE BUY 0.5/1.5 @ 120.00;MSFT.US;50.00
+80000035;Close trade;2024-04-02 14:00:00;Profit of position #70000004;MSFT.US;10.00
+80000036;Dividend;2024-04-02 15:00:00;Synthetic cash dividend;AAPL.US;3.00
+80000037;Withholding tax;2024-04-02 16:00:00;Synthetic dividend withholding tax;AAPL.US;-0.45
+80000038;Free funds interest;2024-04-02 17:00:00;Synthetic free-funds interest;;1.00
+80000039;Interest tax;2024-04-02 18:00:00;Synthetic interest withholding tax;;-0.19
+80000040;Transfer;2024-05-02 09:00:00;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;;1000.00
+80000041;Stock purchase;2024-05-02 10:00:00;OPEN BUY 1 @ 100.00;MSFT.US;-100.00
+80000042;Stock purchase;2024-05-02 11:00:00;OPEN BUY 2 @ 50.00;AAPL.US;-100.00
+80000043;Stock purchase;2024-05-02 12:00:00;OPEN BUY 0.5/1.5 @ 100.00;MSFT.US;-50.00
+80000044;Stock sell;2024-05-02 13:00:00;CLOSE BUY 0.5/1.5 @ 120.00;MSFT.US;50.00
+80000045;Close trade;2024-05-02 14:00:00;Profit of position #70000005;MSFT.US;10.00
+80000046;Dividend;2024-05-02 15:00:00;Synthetic cash dividend;AAPL.US;3.00
+80000047;Withholding tax;2024-05-02 16:00:00;Synthetic dividend withholding tax;AAPL.US;-0.45
+80000048;Free funds interest;2024-05-02 17:00:00;Synthetic free-funds interest;;1.00
+80000049;Interest tax;2024-05-02 18:00:00;Synthetic interest withholding tax;;-0.19
+80000050;Transfer;2024-06-02 09:00:00;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;;1000.00
+80000051;Stock purchase;2024-06-02 10:00:00;OPEN BUY 1 @ 100.00;MSFT.US;-100.00
+80000052;Stock purchase;2024-06-02 11:00:00;OPEN BUY 2 @ 50.00;AAPL.US;-100.00
+80000053;Stock purchase;2024-06-02 12:00:00;OPEN BUY 0.5/1.5 @ 100.00;MSFT.US;-50.00
+80000054;Stock sell;2024-06-02 13:00:00;CLOSE BUY 0.5/1.5 @ 120.00;MSFT.US;50.00
+80000055;Close trade;2024-06-02 14:00:00;Profit of position #70000006;MSFT.US;10.00
+80000056;Dividend;2024-06-02 15:00:00;Synthetic cash dividend;AAPL.US;3.00
+80000057;Withholding tax;2024-06-02 16:00:00;Synthetic dividend withholding tax;AAPL.US;-0.45
+80000058;Free funds interest;2024-06-02 17:00:00;Synthetic free-funds interest;;1.00
+80000059;Interest tax;2024-06-02 18:00:00;Synthetic interest withholding tax;;-0.19
+80000060;Transfer;2024-07-02 09:00:00;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;;1000.00
+80000061;Stock purchase;2024-07-02 10:00:00;OPEN BUY 1 @ 100.00;MSFT.US;-100.00
+80000062;Stock purchase;2024-07-02 11:00:00;OPEN BUY 2 @ 50.00;AAPL.US;-100.00
+80000063;Stock purchase;2024-07-02 12:00:00;OPEN BUY 0.5/1.5 @ 100.00;MSFT.US;-50.00
+80000064;Stock sell;2024-07-02 13:00:00;CLOSE BUY 0.5/1.5 @ 120.00;MSFT.US;50.00
+80000065;Close trade;2024-07-02 14:00:00;Profit of position #70000007;MSFT.US;10.00
+80000066;Dividend;2024-07-02 15:00:00;Synthetic cash dividend;AAPL.US;3.00
+80000067;Withholding tax;2024-07-02 16:00:00;Synthetic dividend withholding tax;AAPL.US;-0.45
+80000068;Free funds interest;2024-07-02 17:00:00;Synthetic free-funds interest;;1.00
+80000069;Interest tax;2024-07-02 18:00:00;Synthetic interest withholding tax;;-0.19
+80000070;Transfer;2024-08-02 09:00:00;Currency conversion, PLN to USD from TA: 90000000 to: 90000001, Exchange rate:0.25;;1000.00
+80000071;Stock purchase;2024-08-02 10:00:00;OPEN BUY 1 @ 100.00;MSFT.US;-100.00
+80000072;Stock purchase;2024-08-02 11:00:00;OPEN BUY 2 @ 50.00;AAPL.US;-100.00
+80000073;Stock purchase;2024-08-02 12:00:00;OPEN BUY 0.5/1.5 @ 100.00;MSFT.US;-50.00
+80000074;Stock sell;2024-08-02 13:00:00;CLOSE BUY 0.5/1.5 @ 120.00;MSFT.US;50.00
+80000075;Close trade;2024-08-02 14:00:00;Profit of position #70000008;MSFT.US;10.00
+80000076;Dividend;2024-08-02 15:00:00;Synthetic cash dividend;AAPL.US;3.00
+80000077;Withholding tax;2024-08-02 16:00:00;Synthetic dividend withholding tax;AAPL.US;-0.45
+80000078;Free funds interest;2024-08-02 17:00:00;Synthetic free-funds interest;;1.00
+80000079;Interest tax;2024-08-02 18:00:00;Synthetic interest withholding tax;;-0.19
