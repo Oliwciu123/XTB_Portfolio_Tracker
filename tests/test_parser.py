@@ -114,6 +114,58 @@ def test_load_xlsx_account_report():
     assert len(account.transactions) >= 50
 
 
+def test_xlsx_with_truncated_dimension_still_parses(tmp_path: Path):
+    """Regression: XTB sometimes writes dimension=\"A1\"; openpyxl read_only then drops rows."""
+    import io
+    import re
+    import zipfile
+
+    from openpyxl import Workbook
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Cash Operations"
+    ws.append(["Account number", "55287715"])
+    ws.append(["Cash Operations", ""])
+    ws.append(["Type", "Ticker", "Instrument", "Time", "Amount", "ID", "Comment", "Product"])
+    ws.append(
+        [
+            "Transfer",
+            "",
+            "",
+            datetime(2026, 5, 27, 12, 34, 40),
+            176.17,
+            "1281860922",
+            "Currency conversion, PLN to EUR from TA: 1 to: 55287715, Exchange rate:0.23",
+            "My Trades",
+        ]
+    )
+    buf = io.BytesIO()
+    wb.save(buf)
+
+    # Corrupt sheet dimension the way some XTB exports do.
+    out = tmp_path / "XTB_EURO_cs.xlsx"
+    with zipfile.ZipFile(io.BytesIO(buf.getvalue()), "r") as zin:
+        with zipfile.ZipFile(out, "w") as zout:
+            for info in zin.infolist():
+                data = zin.read(info.filename)
+                if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml"):
+                    text = data.decode("utf-8")
+                    text = re.sub(
+                        r'dimension ref="[^"]*"',
+                        'dimension ref="A1"',
+                        text,
+                        count=1,
+                    )
+                    data = text.encode("utf-8")
+                zout.writestr(info, data)
+
+    account = load_csv(out)
+    assert account.currency == "EUR"
+    assert account.account_id == "55287715"
+    assert len(account.transactions) >= 1
+
+
 def test_load_xlsx_under_user_cs_names(tmp_path: Path):
     """Canonical local names: XTB_USD_cs.xlsx / XTB_EURO_cs.xlsx."""
     import shutil

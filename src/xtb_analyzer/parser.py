@@ -255,6 +255,35 @@ def _is_cash_ops_sheet_name(name: str) -> bool:
     )
 
 
+def _workbook_cash_ops_rows(workbook) -> list[list[object]]:
+    """Pick the best sheet rows from an open workbook (Cash Operations preferred)."""
+    preferred = None
+    for name in workbook.sheetnames:
+        if _is_cash_ops_sheet_name(name):
+            preferred = workbook[name]
+            break
+
+    candidates: list = []
+    if preferred is not None:
+        candidates.append(preferred)
+    for name in workbook.sheetnames:
+        sheet = workbook[name]
+        if sheet is not preferred:
+            candidates.append(sheet)
+
+    best_rows: list[list[object]] | None = None
+    for sheet in candidates:
+        rows = _sheet_rows(sheet)
+        if _sheet_has_cash_ops(rows):
+            return rows
+        if best_rows is None or len(rows) > len(best_rows):
+            best_rows = rows
+
+    if best_rows is None:
+        raise ValueError("workbook has no sheets")
+    return best_rows
+
+
 def _read_xlsx_rows(path: Path) -> list[list[object]]:
     try:
         import openpyxl
@@ -274,59 +303,39 @@ def _read_xlsx_rows(path: Path) -> list[list[object]]:
             "poczekaj aż ikona chmury zniknie, potem spróbuj ponownie."
         )
 
+    # Prefer non-read-only first: some XTB exports declare dimension="A1" while the
+    # sheet still has a full table. openpyxl read_only then yields only cell A1.
     last_error: Exception | None = None
-    workbook = None
-    for read_only in (True, False):
+    best_rows: list[list[object]] | None = None
+    for read_only in (False, True):
         try:
             workbook = openpyxl.load_workbook(path, data_only=True, read_only=read_only)
-            break
         except Exception as exc:  # noqa: BLE001 — surface later with context
             last_error = exc
-            workbook = None
-
-    if workbook is None:
-        hint = ""
-        err_text = str(last_error or "")
-        if "zip" in err_text.lower() or "not a zip" in err_text.lower():
-            hint = (
-                " Plik nie jest prawidłowym XLSX (częsty efekt OneDrive „tylko online” "
-                "albo uszkodzonego pobrania). Pobierz lokalnie / wyeksportuj ponownie z xStation."
-            )
-        raise ValueError(
-            f"Nie można otworzyć {path.name} przez openpyxl "
-            f"({type(last_error).__name__}: {last_error}).{hint}"
-        ) from last_error
-
-    try:
-        # 1) Prefer sheet by name.
-        preferred = None
-        for name in workbook.sheetnames:
-            if _is_cash_ops_sheet_name(name):
-                preferred = workbook[name]
-                break
-
-        candidates: list = []
-        if preferred is not None:
-            candidates.append(preferred)
-        # 2) Then every sheet (cash ops is usually last in XTB exports).
-        for name in workbook.sheetnames:
-            sheet = workbook[name]
-            if sheet is not preferred:
-                candidates.append(sheet)
-
-        best_rows: list[list[object]] | None = None
-        for sheet in candidates:
-            rows = _sheet_rows(sheet)
+            continue
+        try:
+            rows = _workbook_cash_ops_rows(workbook)
             if _sheet_has_cash_ops(rows):
                 return rows
-            if best_rows is None:
+            if best_rows is None or len(rows) > len(best_rows):
                 best_rows = rows
+        finally:
+            workbook.close()
 
-        if best_rows is None:
-            raise ValueError(f"{path.name}: workbook has no sheets")
+    if best_rows is not None:
         return best_rows
-    finally:
-        workbook.close()
+
+    hint = ""
+    err_text = str(last_error or "")
+    if "zip" in err_text.lower() or "not a zip" in err_text.lower():
+        hint = (
+            " Plik nie jest prawidłowym XLSX (częsty efekt OneDrive „tylko online” "
+            "albo uszkodzonego pobrania). Pobierz lokalnie / wyeksportuj ponownie z xStation."
+        )
+    raise ValueError(
+        f"Nie można otworzyć {path.name} przez openpyxl "
+        f"({type(last_error).__name__}: {last_error}).{hint}"
+    ) from last_error
 
 
 def _read_rows(path: Path) -> list[list[object]]:
