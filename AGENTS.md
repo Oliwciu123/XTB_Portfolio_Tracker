@@ -3,7 +3,7 @@
 ## Cursor Cloud specific instructions
 
 This is a single Python CLI/library product — **XTB Portfolio Analyzer** (`xtb-analyzer`).
-It parses XTB broker CSV cash-operation exports and generates an interactive HTML report.
+It parses XTB broker account exports and generates an interactive HTML report.
 There is no long-running server or database. See `README.md` for full usage and options.
 
 ### Environment
@@ -20,21 +20,20 @@ There is no long-running server or database. See `README.md` for full usage and 
 
 - Standard commands live in `README.md` (`pytest`, `python -m xtb_analyzer ...`). There is no
   lint config or separate build step (editable install only).
-- Tests: `python -m pytest`. On a fresh checkout **5 tests fail** (`tests/test_parser.py::test_load_*`
-  and `tests/test_flows.py::*`) because they load the user's real private exports at
-  `data/XTB_USD_account_cs.csv` / `data/XTB_EURO_account_cs.csv`, which are **gitignored and not in
-  the repo**. The other tests pass offline and require no data. This is a data availability gap, not
-  a code defect — do not "fix" these tests.
+- Tests: `python -m pytest`. Parser/unit tests use fixtures under `tests/fixtures/` (including
+  full-account XLSX samples). Real user exports in `data/` are gitignored and not required for CI.
 
 ### Running the app end-to-end (report generation)
 
-- The CLI reads `data/XTB_*_account_cs.csv` (semicolon-delimited, European decimals). Each file must
-  contain a `CASH OPERATION HISTORY` section followed by a transaction table whose header row starts
-  with `ID`. Files are matched by the glob `XTB_*_account_cs.csv`; currency is inferred from the
-  filename (`USD`/`EURO`/`PLN`).
-- `data/` is gitignored and holds private data, so a fresh clone has no input. To demo/test the full
-  pipeline without real user data, drop synthetic `data/XTB_*_account_cs.csv` exports in and run
-  `python -m xtb_analyzer --currency pln`; the report is written to `output/report.html`.
+- Canonical inputs (preferred): `data/XTB_USD_cs.xlsx` and `data/XTB_EURO_cs.xlsx` — full xStation
+  account XLSX reports. Currency is taken from the filename (`USD` / `EURO` / `EUR` / `PLN`).
+  The parser reads the `CASH OPERATION HISTORY` sheet.
+- When those canonical files are present, `discover_export_files()` uses **only** them and ignores
+  leftover Closed Positions / broken CSV files in `data/`.
+- `data/` is gitignored. To demo the full pipeline, copy fixtures:
+  `cp tests/fixtures/legacy_usd_account.xlsx data/XTB_USD_cs.xlsx`
+  `cp tests/fixtures/legacy_eur_account.xlsx data/XTB_EURO_cs.xlsx`
+  then run `python -m xtb_analyzer --currency pln`.
 - Report generation needs **outbound network**: Yahoo Finance (prices/benchmarks via `yfinance`) and
   the NBP API (`api.nbp.pl`, PLN FX rates). Use `--no-live` and/or `--no-cache` to control fetching.
   Charts in the HTML load Plotly.js from a CDN, so viewing the report also needs internet.

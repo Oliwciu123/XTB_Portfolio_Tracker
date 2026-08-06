@@ -201,14 +201,16 @@ def _read_xlsx_rows(path: Path) -> list[list[object]]:
             sheet = workbook[name]
             break
     if sheet is None:
+        # Prefer last sheet (XTB usually puts cash ops last) over closed positions.
         sheet = workbook[workbook.sheetnames[-1]]
 
     rows: list[list[object]] = []
     for row in sheet.iter_rows(values_only=True):
-        cells = list(row)
-        if cells and cells[0] is None:
+        cells = ["" if c is None else c for c in row]
+        # XTB account XLSX pads a blank leading column — strip all leading empties.
+        while cells and (cells[0] == "" or cells[0] is None):
             cells = cells[1:]
-        rows.append(["" if c is None else c for c in cells])
+        rows.append(cells)
     workbook.close()
     return rows
 
@@ -602,7 +604,28 @@ def load_csv(path: str | Path) -> Account:
 
 
 def load_accounts(paths: list[str | Path]) -> list[Account]:
-    return [load_csv(path) for path in paths]
+    accounts: list[Account] = []
+    for path in paths:
+        path = Path(path)
+        try:
+            accounts.append(load_csv(path))
+        except Exception as exc:
+            raise ValueError(f"Failed to load {path.name}: {exc}") from exc
+    return accounts
+
+
+def _has_cash_operations_content(path: Path) -> bool:
+    """True when the file contains a parseable Cash Operations table."""
+    try:
+        rows = _read_rows(path)
+        if not rows:
+            return False
+        history_start = _find_history_marker(rows)
+        start = history_start if history_start is not None else 0
+        _find_transaction_header(rows, start=start)
+        return True
+    except Exception:
+        return False
 
 
 def _is_positions_only_file(path: Path) -> bool:
@@ -618,7 +641,6 @@ def _is_positions_only_file(path: Path) -> bool:
     ) is not None
     has_cash = _find_history_marker(rows) is not None
     if has_positions and not has_cash:
-        # Flat cash-ops files have no section marker; only skip clear positions exports.
         try:
             _find_transaction_header(rows, start=0)
             return False
@@ -627,19 +649,40 @@ def _is_positions_only_file(path: Path) -> bool:
     return False
 
 
+def _is_canonical_account_report(path: Path) -> bool:
+    """Match preferred names: XTB_USD_cs.xlsx, XTB_EURO_cs.xlsx, XTB_*_account*.xlsx."""
+    name = path.name
+    if re.match(r"(?i)XTB_.+_cs\.(xlsx|xlsm|xls|csv)$", name):
+        return True
+    if re.match(r"(?i)XTB_.+_account.*\.(xlsx|xlsm|xls|csv)$", name):
+        return True
+    return False
+
+
 def discover_export_files(data_dir: str | Path) -> list[Path]:
     """Find XTB Cash Operations exports in ``data_dir`` (CSV and XLSX).
 
-    Skips Closed/Open Positions files — those are a different report and cannot
-    replace Cash Operations for deposits, dividends and cash flows.
+    Preferred (canonical) names — used exclusively when present and parseable:
+      ``XTB_USD_cs.xlsx``, ``XTB_EURO_cs.xlsx`` (also ``XTB_*_account*.xlsx``).
+
+    Other Cash Operations CSV/XLSX files are used only as a fallback. Closed/Open
+    Positions exports and unparseable leftovers in ``data/`` are skipped so they
+    cannot break the report pipeline.
     """
     data_dir = Path(data_dir)
+    if not data_dir.is_dir():
+        return []
+
     patterns = (
-        "XTB_*_account_cs.csv",
+        "XTB_*_cs.xlsx",
+        "XTB_*_cs.xlsm",
+        "XTB_*_cs.xls",
+        "XTB_*_cs.csv",
+        "XTB_*_account*.xlsx",
         "XTB_*_account*.csv",
         "XTB_*_cash*.csv",
-        "XTB_*.csv",
         "XTB_*.xlsx",
+        "XTB_*.csv",
         "*cash*ops*.csv",
         "*cashOperations*.csv",
         "*Cash*Operation*.csv",
@@ -649,12 +692,19 @@ def discover_export_files(data_dir: str | Path) -> list[Path]:
         "account_*.xlsx",
         "account_*.csv",
     )
-    found: dict[str, Path] = {}
+
+    candidates: dict[str, Path] = {}
     for pattern in patterns:
         for path in data_dir.glob(pattern):
             if not path.is_file() or path.name.startswith("~"):
                 continue
             if _is_positions_only_file(path):
                 continue
-            found[path.name.lower()] = path
-    return sorted(found.values(), key=lambda p: p.name.lower())
+            candidates[path.name.lower()] = path
+
+    parseable = [p for p in candidates.values() if _has_cash_operations_content(p)]
+    canonical = [p for p in parseable if _is_canonical_account_report(p)]
+
+    # When the user drops the standard XTB_*_cs.xlsx pair, ignore leftover CSVs.
+    chosen = canonical if canonical else parseable
+    return sorted(chosen, key=lambda p: p.name.lower())

@@ -612,7 +612,8 @@ def generate_report(
     if not csv_files:
         raise FileNotFoundError(
             f"Brak eksportów XTB w {data_dir.resolve()}. "
-            "Wklej pliki CSV (Cash Operations) lub XLSX (raport konta), np. XTB_USD_*.csv."
+            "Wklej raporty konta XTB do data/: XTB_USD_cs.xlsx i XTB_EURO_cs.xlsx "
+            "(xStation → Historia → Eksportuj jako XLSX)."
         )
 
     accounts = load_accounts(csv_files)

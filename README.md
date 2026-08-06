@@ -34,11 +34,17 @@ python -c "import xtb_analyzer; print(xtb_analyzer.__file__)"
 
 ## Usage
 
-1. Export cash operation history from XTB for each account currency (USD / EUR / …).
-2. Place files in `data/`. Supported formats (auto-detected):
-   - **Modern flat CSV** (recommended): xStation → *Account history* → *Cash operations* → *Export* → *Cash Operations* → *CSV*. Name files so the currency is visible, e.g. `XTB_USD_cash_ops.csv`, `XTB_EURO_cash_ops.csv`.
-   - **Legacy multi-section CSV** with a `CASH OPERATION HISTORY` block (older exports).
-   - **Full account XLSX** report — drop the `.xlsx` straight into `data/` (the `CASH OPERATION HISTORY` sheet is read automatically).
+1. Export the full account history from XTB for each currency (USD / EUR / …).
+2. Place files in `data/` using these names (recommended):
+   - `XTB_USD_cs.xlsx`
+   - `XTB_EURO_cs.xlsx`
+   
+   How to export: xStation → *Historia* / *Account history* → **Eksportuj jako XLSX**
+   (full account report). The `CASH OPERATION HISTORY` sheet is read automatically.
+
+   Other formats still work as a fallback (Cash Operations CSV, legacy multi-section CSV),
+   but when `XTB_*_cs.xlsx` files are present they take priority and leftover CSV junk in
+   `data/` is ignored so it cannot break the report.
 3. Generate the report:
 
 ```bash

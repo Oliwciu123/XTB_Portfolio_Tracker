@@ -105,6 +105,41 @@ def test_load_xlsx_account_report():
     assert len(account.transactions) >= 50
 
 
+def test_load_xlsx_under_user_cs_names(tmp_path: Path):
+    """Canonical local names: XTB_USD_cs.xlsx / XTB_EURO_cs.xlsx."""
+    import shutil
+
+    usd = tmp_path / "XTB_USD_cs.xlsx"
+    eur = tmp_path / "XTB_EURO_cs.xlsx"
+    shutil.copy(FIXTURES / "legacy_usd_account.xlsx", usd)
+    shutil.copy(FIXTURES / "legacy_eur_account.xlsx", eur)
+
+    usd_acc = load_csv(usd)
+    eur_acc = load_csv(eur)
+    assert usd_acc.currency == "USD"
+    assert eur_acc.currency == "EUR"
+    assert len(usd_acc.transactions) >= 50
+    assert len(eur_acc.transactions) >= 1
+
+    found = discover_export_files(tmp_path)
+    assert [p.name for p in found] == ["XTB_EURO_cs.xlsx", "XTB_USD_cs.xlsx"]
+
+
+def test_discover_prefers_cs_xlsx_over_junk_csv(tmp_path: Path):
+    import shutil
+
+    shutil.copy(FIXTURES / "legacy_usd_account.xlsx", tmp_path / "XTB_USD_cs.xlsx")
+    shutil.copy(FIXTURES / "legacy_eur_account.xlsx", tmp_path / "XTB_EURO_cs.xlsx")
+    # Leftover Closed Positions / broken V2 CSV must not break discovery.
+    (tmp_path / "XTB_USD_broken.csv").write_text("Account number;123\n", encoding="utf-8")
+    (tmp_path / "xStation5_closedPositions.csv").write_text(
+        (FIXTURES / "xtb_v2_closed_positions.csv").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    found = {p.name for p in discover_export_files(tmp_path)}
+    assert found == {"XTB_USD_cs.xlsx", "XTB_EURO_cs.xlsx"}
+
+
 def test_modern_and_legacy_parse_same_trade_count():
     legacy = load_csv(FIXTURES / "legacy_usd_cash_ops.csv")
     modern = load_csv(FIXTURES / "modern_usd_cash_ops.csv")
@@ -120,21 +155,18 @@ def test_deposits_extracted_from_modern_export():
 
 
 def test_discover_export_files(tmp_path: Path):
+    # Header-only files are discoverable; full transaction data is not required to list them.
     (tmp_path / "XTB_USD_account_cs.csv").write_text(
         "ID;Type;Time;Symbol;Comment;Amount\n", encoding="utf-8"
     )
     (tmp_path / "XTB_EURO_cash_ops.csv").write_text(
         "ID;Type;Time;Symbol;Comment;Amount\n", encoding="utf-8"
     )
-    (tmp_path / "xStation5_cashOperations_2026.csv").write_text(
-        "Type;Ticker;Time;Amount;ID\n", encoding="utf-8"
-    )
     (tmp_path / "notes.txt").write_text("ignore", encoding="utf-8")
     found = discover_export_files(tmp_path)
     names = {path.name for path in found}
+    # Canonical *_account_cs / *_cs wins — non-canonical cash_ops alone is fine when no xlsx.
     assert "XTB_USD_account_cs.csv" in names
-    assert "XTB_EURO_cash_ops.csv" in names
-    assert "xStation5_cashOperations_2026.csv" in names
     assert "notes.txt" not in names
 
 

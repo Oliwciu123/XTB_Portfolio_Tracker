@@ -12,9 +12,13 @@ from xtb_analyzer.report import generate_report
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="xtb_analyzer",
-        description="Generuje interaktywny raport HTML z eksportów CSV XTB.",
+        description="Generuje interaktywny raport HTML z eksportów XTB (XLSX/CSV).",
     )
-    parser.add_argument("--data-dir", default="data", help="folder z plikami XTB_*_account_cs.csv (domyślnie: data)")
+    parser.add_argument(
+        "--data-dir",
+        default="data",
+        help="folder z XTB_USD_cs.xlsx / XTB_EURO_cs.xlsx (domyślnie: data)",
+    )
     parser.add_argument("--output-dir", default="output", help="folder wynikowy (domyślnie: output)")
     parser.add_argument("--currency", default="pln", choices=["pln", "usd", "eur"], help="waluta raportu")
     parser.add_argument("--no-cache", action="store_true", help="pomiń cache cen i kursów")
