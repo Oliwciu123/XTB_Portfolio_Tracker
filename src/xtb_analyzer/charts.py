@@ -859,19 +859,23 @@ def plot_allocation_donut(
     center_label: str | None = None,
     color_offset: int = 0,
 ) -> go.Figure:
-    """Single donut with outside labels (no overlap) and an optional center total."""
+    """Single donut: percentages inside slices, legend below, optional center total.
+
+    Inside labels + a legend are used instead of outside labels, because outside
+    labels with ``automargin`` collapse the chart in narrow containers.
+    """
     colors = [PIE_COLORS[(color_offset + i) % len(PIE_COLORS)] for i in range(len(labels))]
     fig = go.Figure(
         go.Pie(
             labels=labels,
             values=values,
-            hole=0.58,
+            hole=0.55,
             sort=True,
             direction="clockwise",
-            textinfo="label+percent",
-            textposition="outside",
-            automargin=True,
-            textfont=dict(size=12.5, color=CHART_COLORS["text"]),
+            textinfo="percent",
+            textposition="inside",
+            insidetextorientation="horizontal",
+            textfont=dict(size=13, color="#0b0e14", family="Inter, 'Segoe UI', Arial, sans-serif"),
             marker=dict(colors=colors, line=dict(color="#151a23", width=2)),
             hovertemplate="<b>%{label}</b><br>%{value:,.0f} PLN (%{percent})<extra></extra>",
         )
@@ -891,10 +895,20 @@ def plot_allocation_donut(
         {
             **CHART_LAYOUT,
             "title": dict(text=title, x=0, font=dict(size=16)),
-            "height": 420,
-            "showlegend": False,
-            "margin": dict(l=30, r=30, t=70, b=30),
+            "height": 460,
+            "showlegend": True,
+            "legend": dict(
+                orientation="h",
+                yanchor="top",
+                y=-0.02,
+                xanchor="center",
+                x=0.5,
+                font=dict(size=12),
+                bgcolor="rgba(0,0,0,0)",
+            ),
+            "margin": dict(l=20, r=20, t=64, b=100),
             "annotations": annotations,
+            "uniformtext": dict(minsize=11, mode="hide"),
         }
     )
     return fig

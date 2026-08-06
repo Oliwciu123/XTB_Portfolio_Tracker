@@ -1,6 +1,8 @@
 README.md
 pyproject.toml
 src/xtb_analyzer/__init__.py
+src/xtb_analyzer/__main__.py
+src/xtb_analyzer/attribution.py
 src/xtb_analyzer/benchmark.py
 src/xtb_analyzer/cash.py
 src/xtb_analyzer/charts.py
@@ -13,12 +15,18 @@ src/xtb_analyzer/parser.py
 src/xtb_analyzer/portfolio.py
 src/xtb_analyzer/positions.py
 src/xtb_analyzer/prices.py
+src/xtb_analyzer/report.py
+src/xtb_analyzer/returns.py
+src/xtb_analyzer/risk.py
 src/xtb_analyzer/sectors.py
 src/xtb_analyzer.egg-info/PKG-INFO
 src/xtb_analyzer.egg-info/SOURCES.txt
 src/xtb_analyzer.egg-info/dependency_links.txt
 src/xtb_analyzer.egg-info/requires.txt
 src/xtb_analyzer.egg-info/top_level.txt
+tests/test_attribution.py
+tests/test_charts.py
 tests/test_comment_parser.py
 tests/test_flows.py
 tests/test_parser.py
+tests/test_returns.py

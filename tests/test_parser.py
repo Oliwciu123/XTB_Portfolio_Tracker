@@ -1,5 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -13,6 +14,11 @@ from xtb_analyzer.parser import load_csv
 
 
 DATA_DIR = "data"
+
+requires_data = pytest.mark.skipif(
+    not Path(DATA_DIR, "XTB_USD_account_cs.csv").exists(),
+    reason="private XTB CSV exports not available (data/ is gitignored)",
+)
 
 
 def test_open_buy_fractional():
@@ -48,6 +54,7 @@ def test_transfer_comment():
     assert parse_exchange_rate(comment) == Decimal("0.268063")
 
 
+@requires_data
 def test_load_usd_account():
     account = load_csv(f"{DATA_DIR}/XTB_USD_account_cs.csv")
     assert account.account_id == "53287226"
@@ -60,6 +67,7 @@ def test_load_usd_account():
     assert account.transactions[1].shares == Decimal("1")
 
 
+@requires_data
 def test_load_eur_account():
     account = load_csv(f"{DATA_DIR}/XTB_EURO_account_cs.csv")
     assert account.account_id == "55287715"
@@ -69,6 +77,7 @@ def test_load_eur_account():
     assert account.transactions[-1].symbol == "IFX.DE"
 
 
+@requires_data
 def test_transaction_timestamps_parseable():
     account = load_csv(f"{DATA_DIR}/XTB_USD_account_cs.csv")
     timestamps = [tx.timestamp for tx in account.transactions]

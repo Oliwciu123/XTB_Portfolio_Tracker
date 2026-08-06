@@ -1,9 +1,18 @@
 from decimal import Decimal
+from pathlib import Path
+
+import pytest
 
 from xtb_analyzer.flows import CONVERSION_FEE_RATE, extract_deposits
 from xtb_analyzer.parser import load_accounts
 
+requires_data = pytest.mark.skipif(
+    not Path("data/XTB_USD_account_cs.csv").exists(),
+    reason="private XTB CSV exports not available (data/ is gitignored)",
+)
 
+
+@requires_data
 def test_extract_deposits_from_usd_account():
     accounts = load_accounts(["data/XTB_USD_account_cs.csv"])
     deposits = extract_deposits(accounts)
@@ -18,6 +27,7 @@ def test_conversion_fee_rate():
     assert CONVERSION_FEE_RATE == Decimal("0.005")
 
 
+@requires_data
 def test_conversion_loss_is_commission_only():
     accounts = load_accounts(["data/XTB_USD_account_cs.csv"])
     from xtb_analyzer.flows import analyze_conversion_losses
