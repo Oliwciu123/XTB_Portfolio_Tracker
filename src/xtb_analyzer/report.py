@@ -34,7 +34,7 @@ from xtb_analyzer.charts import (
 from xtb_analyzer.flows import analyze_conversion_losses, attach_deposits_to_nav, conversion_summary
 from xtb_analyzer.metrics import format_positions_table
 from xtb_analyzer.models import Account
-from xtb_analyzer.parser import load_accounts
+from xtb_analyzer.parser import discover_export_files, load_accounts
 from xtb_analyzer.portfolio import build_nav_series
 from xtb_analyzer.prices import fetch_benchmarks
 from xtb_analyzer.returns import ReturnMeasures, compute_return_measures, twr_daily_returns
@@ -608,9 +608,12 @@ def generate_report(
     data_dir = Path(data_dir)
     output_dir = Path(output_dir)
 
-    csv_files = sorted(data_dir.glob("XTB_*_account_cs.csv"))
+    csv_files = discover_export_files(data_dir)
     if not csv_files:
-        raise FileNotFoundError(f"Brak plików CSV w {data_dir.resolve()}. Wklej eksporty XTB (XTB_*_account_cs.csv).")
+        raise FileNotFoundError(
+            f"Brak eksportów XTB w {data_dir.resolve()}. "
+            "Wklej pliki CSV (Cash Operations) lub XLSX (raport konta), np. XTB_USD_*.csv."
+        )
 
     accounts = load_accounts(csv_files)
     data = collect_report_data(accounts, currency=currency, use_cache=use_cache, refresh_latest=refresh_latest)

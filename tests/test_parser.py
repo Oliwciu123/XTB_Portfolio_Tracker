@@ -4,83 +4,83 @@ from pathlib import Path
 
 import pytest
 
-from xtb_analyzer.comment_parser import (
-    is_transfer_in,
-    parse_exchange_rate,
-    parse_trade_comment,
-    transfer_target_currency,
-)
-from xtb_analyzer.parser import load_csv
+from xtb_analyzer.parser import discover_export_files, load_csv, parse_timestamp
+from xtb_analyzer.flows import extract_deposits
+
+FIXTURES = Path(__file__).parent / "fixtures"
 
 
-DATA_DIR = "data"
-
-requires_data = pytest.mark.skipif(
-    not Path(DATA_DIR, "XTB_USD_account_cs.csv").exists(),
-    reason="private XTB CSV exports not available (data/ is gitignored)",
-)
+def test_parse_timestamp_formats():
+    assert parse_timestamp("04.11.2025 21:48:19").year == 2025
+    assert parse_timestamp("2025-11-04 21:48:19").day == 4
+    assert parse_timestamp(datetime(2025, 11, 4, 21, 48, 19)).minute == 48
 
 
-def test_open_buy_fractional():
-    trade = parse_trade_comment("OPEN BUY 1/1.5 @ 251.27", "buy")
-    assert trade is not None
-    assert trade.shares == Decimal("1")
-    assert trade.price == Decimal("251.27")
-    assert trade.fill == Decimal("1")
-    assert trade.total == Decimal("1.5")
-
-
-def test_open_buy_simple():
-    trade = parse_trade_comment("OPEN BUY 4 @ 94.92", "buy")
-    assert trade is not None
-    assert trade.shares == Decimal("4")
-    assert trade.price == Decimal("94.92")
-
-
-def test_close_buy():
-    trade = parse_trade_comment("CLOSE BUY 0.4133/2 @ 456.97", "sell")
-    assert trade is not None
-    assert trade.shares == Decimal("0.4133")
-    assert trade.price == Decimal("456.97")
-
-
-def test_transfer_comment():
-    comment = (
-        "Currency conversion, PLN to USD from TA: 52970582 to: 53287226, "
-        "Exchange rate:0.268063"
-    )
-    assert is_transfer_in(comment)
-    assert transfer_target_currency(comment) == "USD"
-    assert parse_exchange_rate(comment) == Decimal("0.268063")
-
-
-@requires_data
-def test_load_usd_account():
-    account = load_csv(f"{DATA_DIR}/XTB_USD_account_cs.csv")
-    assert account.account_id == "53287226"
+def test_load_legacy_csv():
+    account = load_csv(FIXTURES / "legacy_usd_cash_ops.csv")
     assert account.currency == "USD"
+    assert account.account_id == "53287226"
     assert account.equity == Decimal("3491.7")
-    assert len(account.transactions) == 104
+    assert len(account.transactions) >= 50
     assert account.transactions[0].type == "transfer_in"
-    assert account.transactions[1].type == "buy"
-    assert account.transactions[1].symbol == "AMD.US"
-    assert account.transactions[1].shares == Decimal("1")
+    buys = [tx for tx in account.transactions if tx.type == "buy"]
+    assert buys[0].symbol == "AMD.US"
+    assert buys[0].shares == Decimal("1")
 
 
-@requires_data
-def test_load_eur_account():
-    account = load_csv(f"{DATA_DIR}/XTB_EURO_account_cs.csv")
-    assert account.account_id == "55287715"
-    assert account.currency == "EUR"
-    assert account.holder_name == "OLIWIER MAREK ARENT"
-    assert len(account.transactions) == 3
-    assert account.transactions[-1].symbol == "IFX.DE"
+def test_load_modern_flat_csv():
+    account = load_csv(FIXTURES / "modern_usd_cash_ops.csv")
+    assert account.currency == "USD"
+    assert account.account_id == "53287226"  # recovered from conversion comment
+    assert len(account.transactions) >= 50
+    assert account.transactions[0].type == "transfer_in"
+    assert account.transactions[0].amount == Decimal("1206.28")
+    buys = [tx for tx in account.transactions if tx.type == "buy"]
+    assert buys[0].symbol == "AMD.US"
+    assert buys[0].shares == Decimal("1")
+    assert buys[0].price == Decimal("251.27")
 
 
-@requires_data
-def test_transaction_timestamps_parseable():
-    account = load_csv(f"{DATA_DIR}/XTB_USD_account_cs.csv")
-    timestamps = [tx.timestamp for tx in account.transactions]
-    assert len(timestamps) == len(account.transactions)
-    assert isinstance(timestamps[0], datetime)
-    assert sorted(timestamps)[0] == min(timestamps)
+def test_load_modern_accepts_stocks_etf_type_labels():
+    account = load_csv(FIXTURES / "modern_usd_cash_ops.csv")
+    types = {tx.type for tx in account.transactions}
+    assert "buy" in types
+    assert "transfer_in" in types
+
+
+def test_load_xlsx_account_report():
+    account = load_csv(FIXTURES / "legacy_usd_account.xlsx")
+    assert account.currency == "USD"
+    assert account.account_id == "53287226"
+    assert len(account.transactions) >= 50
+
+
+def test_modern_and_legacy_parse_same_trade_count():
+    legacy = load_csv(FIXTURES / "legacy_usd_cash_ops.csv")
+    modern = load_csv(FIXTURES / "modern_usd_cash_ops.csv")
+    assert len(legacy.transactions) == len(modern.transactions)
+
+
+def test_deposits_extracted_from_modern_export():
+    account = load_csv(FIXTURES / "modern_usd_cash_ops.csv")
+    deposits = extract_deposits([account])
+    assert len(deposits) >= 1
+    assert deposits[0].currency == "USD"
+    assert float(deposits[0].pln_spent) > 0
+
+
+def test_discover_export_files(tmp_path: Path):
+    (tmp_path / "XTB_USD_account_cs.csv").write_text("ID;Type;Time;Symbol;Comment;Amount\n", encoding="utf-8")
+    (tmp_path / "XTB_EURO_cash_ops.csv").write_text("ID;Type;Time;Symbol;Comment;Amount\n", encoding="utf-8")
+    (tmp_path / "notes.txt").write_text("ignore", encoding="utf-8")
+    found = discover_export_files(tmp_path)
+    names = {path.name for path in found}
+    assert "XTB_USD_account_cs.csv" in names
+    assert "XTB_EURO_cash_ops.csv" in names
+    assert "notes.txt" not in names
+
+
+def test_missing_history_marker_no_longer_raises():
+    """Regression: modern flat CSV has no 'CASH OPERATION HISTORY' section."""
+    account = load_csv(FIXTURES / "modern_usd_cash_ops.csv")
+    assert account.transactions

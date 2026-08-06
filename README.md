@@ -34,25 +34,18 @@ python -c "import xtb_analyzer; print(xtb_analyzer.__file__)"
 
 ## Usage
 
-1. Export cash operation history from XTB (CSV) for each account.
-2. Place files in `data/` (e.g. `XTB_USD_account_cs.csv`, `XTB_EURO_account_cs.csv`).
-
-### HTML report (recommended)
+1. Export cash operation history from XTB for each account currency (USD / EUR / …).
+2. Place files in `data/`. Supported formats (auto-detected):
+   - **Modern flat CSV** (recommended): xStation → *Account history* → *Cash operations* → *Export* → *Cash Operations* → *CSV*. Name files so the currency is visible, e.g. `XTB_USD_cash_ops.csv`, `XTB_EURO_cash_ops.csv`.
+   - **Legacy multi-section CSV** with a `CASH OPERATION HISTORY` block (older exports).
+   - **Full account XLSX** report — drop the `.xlsx` straight into `data/` (the `CASH OPERATION HISTORY` sheet is read automatically).
+3. Generate the report:
 
 ```bash
 python -m xtb_analyzer --currency pln --open
 ```
 
-Options: `--data-dir`, `--output-dir`, `--currency pln|usd|eur`, `--no-cache`, `--no-live`, `--open`.
-The report is written to `output/report.html` — a self-contained, interactive page (charts require internet for the plotly.js CDN).
-
-### Notebook
-
-```bash
-jupyter notebook notebooks/portfolio_analysis.ipynb
-```
-
-Run all cells. Results (CSV, JSON and the HTML report) are saved to `output/`.
+Or open the notebook and run all cells. Replacing files in `data/` and re-running is enough — the whole pipeline rebuilds from the latest exports.
 
 ## Features
 
