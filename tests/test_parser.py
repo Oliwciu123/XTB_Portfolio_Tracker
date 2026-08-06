@@ -63,6 +63,33 @@ def test_load_v2_xlsx_with_semicolon_lines_in_one_cell():
     assert account.transactions[0].type == "transfer_in"
 
 
+def test_load_xtb_v2_cash_operations():
+    """XTB 2025+ export: Type;Ticker;Instrument;Time;Amount;ID;Comment;Product."""
+    account = load_csv(FIXTURES / "xtb_v2_usd_cash_ops.csv")
+    assert account.currency == "USD"
+    assert account.account_id == "53287226"
+    assert len(account.transactions) == 13
+
+    first = account.transactions[0]
+    assert first.type == "transfer_in"
+    assert first.amount == Decimal("1206.28")
+
+    buys = [tx for tx in account.transactions if tx.type == "buy"]
+    assert buys[0].symbol == "AMD.US"
+    assert buys[0].shares == Decimal("1")
+    assert buys[0].price == Decimal("251.27")
+    assert buys[0].amount == Decimal("-251.27")
+
+    sells = [tx for tx in account.transactions if tx.type == "sell"]
+    assert len(sells) == 1
+    assert sells[0].symbol == "AMD.US"
+    assert sells[0].shares == Decimal("1")
+    assert sells[0].price == Decimal("500.00")
+
+    dividends = [tx for tx in account.transactions if tx.type == "dividend"]
+    assert dividends[0].amount == Decimal("2.50")
+
+
 def test_load_xtb_v2_without_currency_in_filename(tmp_path: Path):
     """Currency inferred from conversion comment / ticker suffix when name has no USD."""
     src = (FIXTURES / "xtb_v2_usd_cash_ops.csv").read_text(encoding="utf-8")
