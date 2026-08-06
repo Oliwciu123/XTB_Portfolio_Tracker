@@ -1,0 +1,14 @@
+Account number;53287226;;;;;;
+Closed Positions;;;;;;;
+Date from (UTC);2006-01-01 00:00:00;;;;;;
+Date to (UTC);2026-08-06 15:59:00;;;;;;
+Instrument;Ticker;Category;Type;Volume;Open Price;Open Time;Close Price;Close Time;Profit/Loss;ID;Comment;Product
+Apple;AAPL.US;Stock;BUY;1;150,00;2025-01-01 10:00:00;160,00;2025-06-01 10:00:00;10,00;111;CLOSE BUY 1 @ 160.00;My Trades
+Total;;;;;;;;;;;;;
+Cash Operations;;;;;;;
+Date from (UTC);2006-01-01 00:00:00;;;;;;
+Date to (UTC);2026-08-06 00:00:00;;;;;;
+Type;Ticker;Instrument;Time;Amount;ID;Comment;Product
+Transfer;;Currency conversion;2025-11-04 21:48:19;1.206,28;1002367469;Currency conversion, PLN to USD from TA: 52970582 to: 53287226, Exchange rate:0.268063;My Trades
+Stock purchase;AMD.US;Advanced Micro Devices;2025-11-04 21:52:58;-251,27;1002371121;OPEN BUY 1/1.5 @ 251.27;My Trades
+Total;;;;954,99;;;

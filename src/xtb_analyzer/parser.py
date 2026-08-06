@@ -24,8 +24,14 @@ from xtb_analyzer.models import Account, Transaction, TransactionType
 
 HISTORY_MARKER = "CASH OPERATION HISTORY"
 CASH_OPS_MARKER = "cash operations"
+CLOSED_POSITIONS_MARKER = "closed positions"
+OPEN_POSITIONS_MARKER = "open positions"
 TOTAL_MARKER = "Total"
 ACCOUNT_ID_RE = re.compile(r"\b(\d{6,})\b")
+POSITIONS_FILENAME_RE = re.compile(
+    r"(closed.?positions?|open.?positions?|pozycje.?zamkni)",
+    re.IGNORECASE,
+)
 
 # Header cell text (lowercased) → canonical field name.
 HEADER_ALIASES = {
@@ -245,15 +251,63 @@ def _find_history_marker(rows: list[list[object]]) -> int | None:
     return None
 
 
+def _find_section_marker(rows: list[list[object]], *markers: str) -> int | None:
+    wanted = {m.lower() for m in markers}
+    for index, row in enumerate(rows):
+        first = _normalize_header_cell(_cell(row, 0))
+        if first in wanted or any(marker in first for marker in wanted):
+            return index
+    return None
+
+
+def _looks_like_positions_header(mapping: dict[str, int], row: list[object]) -> bool:
+    """Closed/Open Positions headers have Volume/Open Price, not cash Amount+Time."""
+    cells = {_normalize_header_cell(_cell(row, i)) for i in range(len(row))}
+    position_hints = {
+        "volume",
+        "open price",
+        "close price",
+        "open time",
+        "close time",
+        "profit/loss",
+        "purchase value",
+        "sale value",
+    }
+    if cells & position_hints:
+        # Cash-ops V2 has Amount+Time; positions use Volume / Open|Close Time.
+        if "amount" not in mapping or "time" not in mapping:
+            return True
+    return False
+
+
+def _positions_export_error(path: Path, rows: list[list[object]]) -> ValueError:
+    preview = []
+    for i, row in enumerate(rows[:6]):
+        preview.append(" | ".join(_cell(row, j) for j in range(min(6, len(row)))))
+    preview_text = "\n".join(f"  row {i}: {line}" for i, line in enumerate(preview)) or "  (empty)"
+    return ValueError(
+        f"{path.name} looks like an XTB Closed/Open Positions export, "
+        "not Cash Operations.\n"
+        "This analyzer needs Cash Operations (wpłaty, zakupy, dywidendy, podatki).\n"
+        "In xStation: Historia → Cash Operations / Operacje gotówkowe → Export CSV.\n"
+        "Put those files in data/ (optionally with USD/EUR in the filename).\n"
+        f"First rows of the file were:\n{preview_text}"
+    )
+
+
 def _find_transaction_header(rows: list[list[object]], start: int = 0) -> tuple[int, dict[str, int]]:
-    """Find the header row by required columns — ID does not have to be first."""
+    """Find the Cash Operations header row by required columns — ID need not be first."""
     required = {"type", "time", "amount"}
     for index in range(start, len(rows)):
+        first = _normalize_header_cell(_cell(rows[index], 0))
+        # Stop at a later non-cash section so we don't mis-read positions tables.
+        if first in {CLOSED_POSITIONS_MARKER, OPEN_POSITIONS_MARKER}:
+            continue
         mapping = _row_column_map(rows[index])
+        if _looks_like_positions_header(mapping, rows[index]):
+            continue
         if required <= mapping.keys() and ("id" in mapping or "symbol" in mapping or "comment" in mapping):
-            # Prefer rows that look like real headers (have type+time+amount).
             if "id" not in mapping:
-                # Synthesize sequential ids later if missing.
                 mapping["id"] = -1
             return index, mapping
 
@@ -267,6 +321,8 @@ def _find_transaction_header(rows: list[list[object]], start: int = 0) -> tuple[
         "  • ID;Type;Time;Comment;Symbol;Amount\n"
         "  • ID;Type;Time;Symbol;Comment;Amount\n"
         "  • Type;Ticker;Instrument;Time;Amount;ID;Comment;Product  (XTB 2025+)\n"
+        "If you exported Closed Positions, use Cash Operations instead "
+        "(xStation → Historia → Cash Operations → Export).\n"
         f"First rows of the file were:\n{preview_text}"
     )
 
@@ -501,8 +557,18 @@ def load_csv(path: str | Path) -> Account:
         raise ValueError(f"No rows found in {path}")
 
     history_start = _find_history_marker(rows)
-    header_search_from = 0  # V2 header sits after preamble; scan from top is fine
-    header_idx, columns = _find_transaction_header(rows, start=header_search_from)
+    positions_start = _find_section_marker(
+        rows, CLOSED_POSITIONS_MARKER, OPEN_POSITIONS_MARKER
+    )
+
+    # Prefer the Cash Operations section when a multi-section export has both.
+    header_search_from = history_start if history_start is not None else 0
+    try:
+        header_idx, columns = _find_transaction_header(rows, start=header_search_from)
+    except ValueError:
+        if positions_start is not None and history_start is None:
+            raise _positions_export_error(path, rows) from None
+        raise
 
     meta = _parse_metadata(
         rows,
@@ -539,8 +605,34 @@ def load_accounts(paths: list[str | Path]) -> list[Account]:
     return [load_csv(path) for path in paths]
 
 
+def _is_positions_only_file(path: Path) -> bool:
+    """True when the file is Closed/Open Positions without a Cash Operations section."""
+    if POSITIONS_FILENAME_RE.search(path.name):
+        return True
+    try:
+        rows = _read_rows(path)
+    except Exception:
+        return False
+    has_positions = _find_section_marker(
+        rows, CLOSED_POSITIONS_MARKER, OPEN_POSITIONS_MARKER
+    ) is not None
+    has_cash = _find_history_marker(rows) is not None
+    if has_positions and not has_cash:
+        # Flat cash-ops files have no section marker; only skip clear positions exports.
+        try:
+            _find_transaction_header(rows, start=0)
+            return False
+        except ValueError:
+            return True
+    return False
+
+
 def discover_export_files(data_dir: str | Path) -> list[Path]:
-    """Find XTB exports in ``data_dir`` (CSV and XLSX)."""
+    """Find XTB Cash Operations exports in ``data_dir`` (CSV and XLSX).
+
+    Skips Closed/Open Positions files — those are a different report and cannot
+    replace Cash Operations for deposits, dividends and cash flows.
+    """
     data_dir = Path(data_dir)
     patterns = (
         "XTB_*_account_cs.csv",
@@ -553,12 +645,16 @@ def discover_export_files(data_dir: str | Path) -> list[Path]:
         "*Cash*Operation*.csv",
         "*CASH*OPERATION*.csv",
         "xStation*_cashOperations*.csv",
+        "xStation*_CashOperations*.csv",
         "account_*.xlsx",
         "account_*.csv",
     )
     found: dict[str, Path] = {}
     for pattern in patterns:
         for path in data_dir.glob(pattern):
-            if path.is_file() and not path.name.startswith("~"):
-                found[path.name.lower()] = path
+            if not path.is_file() or path.name.startswith("~"):
+                continue
+            if _is_positions_only_file(path):
+                continue
+            found[path.name.lower()] = path
     return sorted(found.values(), key=lambda p: p.name.lower())

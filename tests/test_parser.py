@@ -142,3 +142,33 @@ def test_missing_history_marker_no_longer_raises():
     """Regression: modern flat CSV has no 'CASH OPERATION HISTORY' section."""
     account = load_csv(FIXTURES / "modern_usd_cash_ops.csv")
     assert account.transactions
+
+
+def test_closed_positions_export_raises_clear_error():
+    with pytest.raises(ValueError, match="Closed/Open Positions"):
+        load_csv(FIXTURES / "xtb_v2_closed_positions.csv")
+
+
+def test_multi_section_export_uses_cash_operations():
+    account = load_csv(FIXTURES / "xtb_v2_multi_section.csv")
+    assert account.currency == "USD"
+    assert account.account_id == "53287226"
+    assert any(tx.type == "buy" for tx in account.transactions)
+    assert account.transactions[0].amount == Decimal("1206.28")
+
+
+def test_discover_skips_closed_positions(tmp_path: Path):
+    cash = tmp_path / "xStation5_cashOperations_USD.csv"
+    closed = tmp_path / "xStation5_closedPositions_USD.csv"
+    cash.write_text((FIXTURES / "xtb_v2_usd_cash_ops.csv").read_text(encoding="utf-8"), encoding="utf-8")
+    closed.write_text((FIXTURES / "xtb_v2_closed_positions.csv").read_text(encoding="utf-8"), encoding="utf-8")
+    # Also a misleading name that matches XTB_*.csv but is positions-only.
+    wrongly_named = tmp_path / "XTB_USD_account.csv"
+    wrongly_named.write_text(
+        (FIXTURES / "xtb_v2_closed_positions.csv").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    found = {p.name for p in discover_export_files(tmp_path)}
+    assert "xStation5_cashOperations_USD.csv" in found
+    assert "xStation5_closedPositions_USD.csv" not in found
+    assert "XTB_USD_account.csv" not in found

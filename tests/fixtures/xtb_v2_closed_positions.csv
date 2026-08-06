@@ -1,0 +1,8 @@
+Account number;55287715;;;;;;
+Closed Positions;;;;;;;
+Date from (UTC);2006-01-01 00:00:00;;;;;;
+Date to (UTC);2026-08-06 15:59:00;;;;;;
+Instrument;Ticker;Category;Type;Volume;Open Price;Open Time;Close Price;Close Time;Purchase value;Sale value;Profit/Loss;ID;Comment;Product
+Apple;AAPL.US;Stock;BUY;1;150,00;2025-01-01 10:00:00;160,00;2025-06-01 10:00:00;150,00;160,00;10,00;123456;CLOSE BUY 1 @ 160.00;My Trades
+Advanced Micro Devices;AMD.US;Stock;BUY;2;100,00;2025-02-01 10:00:00;120,00;2025-07-01 10:00:00;200,00;240,00;40,00;123457;CLOSE BUY 2 @ 120.00;My Trades
+Total;;;;;;;;;;;;;;;
