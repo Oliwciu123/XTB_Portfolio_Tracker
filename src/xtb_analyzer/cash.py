@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from xtb_analyzer.comment_parser import is_transfer_in, parse_exchange_rate
+from xtb_analyzer.comment_parser import is_transfer_in, parse_exchange_rate, transfer_target_currency
 from xtb_analyzer.models import Account, Transaction
 
 
@@ -22,7 +22,11 @@ def apply_cash(tx: Transaction, ledger: CashLedger) -> None:
 
     if tx.type == "transfer_in" and is_transfer_in(tx.comment):
         rate = parse_exchange_rate(tx.comment)
-        if rate and rate > 0:
+        target = (transfer_target_currency(tx.comment) or tx.currency or "").upper()
+        # Same rule as extract_deposits: a PLN-denominated deposit is already PLN.
+        if target == "PLN":
+            ledger.deposits_pln += tx.amount
+        elif rate and rate > 0:
             ledger.deposits_pln += tx.amount / rate
     elif tx.type == "dividend":
         ledger.dividends += tx.amount

@@ -24,7 +24,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-cache", action="store_true", help="pomiń cache cen i kursów")
     parser.add_argument("--no-live", action="store_true", help="nie pobieraj bieżących notowań")
     parser.add_argument("--open", action="store_true", help="otwórz raport w przeglądarce po wygenerowaniu")
-    parser.epilog = "Aplikacja lokalna (wgranie ZIP): python -m xtb_analyzer.web"
+    parser.epilog = "Okno aplikacji (wgranie ZIP): pythonw -m xtb_analyzer.desktop  lub xtb-analyzer.bat"
     args = parser.parse_args(argv)
 
     try:

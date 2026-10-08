@@ -4,16 +4,23 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 
+# Newer xStation comments put the ticker between the side and the size:
+# "OPEN BUY APP.US 2 @ 10.50" / "CLOSE BUY UBER.US 1.5/3 @ 70.00".
+# Older comments omit it: "OPEN BUY 1/1.5 @ 251.27".
+_TICKER = r"(?P<ticker>[A-Za-z][A-Za-z0-9.]*)"
+_SIZE_AT_PRICE = (
+    r"(?:(?P<fill>[\d.]+)/(?P<total>[\d.]+)|(?P<qty>[\d.]+))\s+@\s+(?P<price>[\d.]+)"
+)
 OPEN_BUY_RE = re.compile(
-    r"OPEN BUY\s+(?:(?P<fill>[\d.]+)/(?P<total>[\d.]+)\s+@\s+|(?P<qty>[\d.]+)\s+@\s+)(?P<price>[\d.]+)",
+    rf"OPEN BUY\s+(?:{_TICKER}\s+)?{_SIZE_AT_PRICE}",
     re.IGNORECASE,
 )
 CLOSE_BUY_RE = re.compile(
-    r"CLOSE BUY\s+(?:(?P<fill>[\d.]+)/(?P<total>[\d.]+)\s+@\s+|(?P<qty>[\d.]+)\s+@\s+)(?P<price>[\d.]+)",
+    rf"CLOSE BUY\s+(?:{_TICKER}\s+)?{_SIZE_AT_PRICE}",
     re.IGNORECASE,
 )
 TRANSFER_RE = re.compile(
-    r"Currency conversion,\s*PLN to (?P<currency>USD|EUR)",
+    r"Currency conversion,\s*(?P<source>PLN|USD|EUR)\s+to\s+(?P<currency>USD|EUR|PLN)",
     re.IGNORECASE,
 )
 EXCHANGE_RATE_RE = re.compile(r"Exchange rate:\s*([\d.]+)", re.IGNORECASE)
@@ -26,6 +33,7 @@ class TradeComment:
     price: Decimal
     fill: Decimal | None = None
     total: Decimal | None = None
+    ticker: str | None = None
 
 
 def parse_trade_comment(comment: str, side: str) -> TradeComment | None:
@@ -43,12 +51,14 @@ def parse_trade_comment(comment: str, side: str) -> TradeComment | None:
         fill = Decimal(groups["fill"])
         total = Decimal(groups["total"])
 
+    ticker = (groups.get("ticker") or "").strip() or None
     return TradeComment(
         side=side,
         shares=shares,
         price=Decimal(groups["price"]),
         fill=fill,
         total=total,
+        ticker=ticker.upper() if ticker else None,
     )
 
 

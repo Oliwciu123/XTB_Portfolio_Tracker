@@ -34,7 +34,7 @@ python -c "import xtb_analyzer; print(xtb_analyzer.__file__)"
 
 ## Usage
 
-1. Export account data from XTB for each currency (USD / EUR).
+1. Export account data from XTB for each currency (USD / EUR / PLN).
 2. Put these files in `data/`:
    - `XTB_USD_cs.xlsx`
    - `XTB_EURO_cs.xlsx`
@@ -54,29 +54,35 @@ python -m xtb_analyzer --currency pln --open
 
 Or open the notebook and run all cells. Replacing files in `data/` and re-running is enough — the whole pipeline rebuilds from the latest exports.
 
-## Local web app
+## Desktop app
 
-Start the upload app from the project root (same calculations as the CLI above):
+On Windows, install the package once (`pip install -e .` from this folder, official Python from python.org so Tk and WebView2 are available), then double-click:
 
-```bash
-source .venv/bin/activate
-python -m xtb_analyzer.web
+```text
+xtb-analyzer.bat
 ```
 
-Open http://127.0.0.1:8765 , drop a `.zip` of XTB account history, and the interactive HTML report replaces the page when it is ready. Optional flags match the CLI: `--port`, `--currency pln`, `--no-live`, `--no-cache`.
+That starts the window with `pythonw` (no console). You can also run:
 
-The zip can contain either layout:
+```bash
+pythonw -m xtb_analyzer.desktop
+```
 
-- Multi-account xStation export, one workbook per currency, nested in an account folder:
+A window opens. Drop the history zip onto it, or click **Wybierz archiwum ZIP**. The same pipeline as `python -m xtb_analyzer` runs, and the interactive report opens in the application window.
 
-  ```text
-  <account>/USD_<account>_<from>_<to>.xlsx
-  <account>/EUR_<account>_<from>_<to>.xlsx
-  ```
+On Linux or macOS the same command works (`python -m xtb_analyzer.desktop`). Optional flags: `--currency pln`, `--no-live`, `--zip path\to\file.zip`.
 
-  Each workbook should include a **Cash Operations** sheet (Closed Positions and Open Positions sheets in the same file are ignored). If several date ranges exist for one account, the file with the latest end date is used.
+The zip can contain either layout. A future PLN account in the same archive is picked up next to USD and EUR:
 
-- The canonical names already used by the CLI, at the root of the zip or under a folder: `XTB_USD_cs.xlsx`, `XTB_EURO_cs.xlsx`.
+```text
+<account>/USD_<account>_<from>_<to>.xlsx
+<account>/EUR_<account>_<from>_<to>.xlsx
+<account>/PLN_<account>_<from>_<to>.xlsx
+```
+
+Each workbook’s **Cash Operations** sheet is used. Closed Positions and Open Positions sheets in the same file are ignored. If several date ranges exist for one account, the file with the latest end date is used.
+
+Canonical CLI names also work, at the zip root or in a folder: `XTB_USD_cs.xlsx`, `XTB_EURO_cs.xlsx`.
 
 Unpacked uploads are written to `data/uploads/` (gitignored, same as `data/` and `output/`).
 
@@ -136,6 +142,8 @@ src/xtb_analyzer/
   sectors.py        # sector enrichment (Yahoo)
   charts.py         # Plotly figures (dark theme)
   report.py         # HTML report generator
+  session.py        # history zip → HTML report
+  desktop.py        # desktop window (zip picker + report)
   __main__.py       # CLI: python -m xtb_analyzer
 ```
 
@@ -147,4 +155,4 @@ pytest
 
 ## Data privacy
 
-The `data/` and `output/` folders are gitignored. Do not commit your transaction files or uploaded zips. The web app stores unpacked uploads under `data/uploads/`.
+The `data/` and `output/` folders are gitignored. Do not commit your transaction files or uploaded zips. The desktop app stores unpacked uploads under `data/uploads/`.

@@ -40,16 +40,27 @@ def extract_deposits(accounts: list[Account]) -> list[Deposit]:
             if tx.type != "transfer_in" or not is_transfer_in(tx.comment):
                 continue
             rate = parse_exchange_rate(tx.comment)
-            if not rate or rate <= 0:
-                continue
+            target = transfer_target_currency(tx.comment) or account.currency
+            # "PLN to USD, Exchange rate:0.27" means foreign units per 1 PLN.
+            # A deposit already denominated in PLN (future PLN account) is the PLN amount itself.
+            if target == "PLN":
+                if tx.amount is None:
+                    continue
+                pln_spent = tx.amount
+                used_rate = rate or Decimal("1")
+            else:
+                if not rate or rate <= 0:
+                    continue
+                pln_spent = tx.amount / rate
+                used_rate = rate
             deposits.append(
                 Deposit(
                     timestamp=pd.Timestamp(tx.timestamp),
                     account_id=account.account_id,
-                    currency=transfer_target_currency(tx.comment) or account.currency,
+                    currency=target,
                     amount_foreign=tx.amount,
-                    pln_spent=tx.amount / rate,
-                    xtb_rate=rate,
+                    pln_spent=pln_spent,
+                    xtb_rate=used_rate,
                 )
             )
     return sorted(deposits, key=lambda item: item.timestamp)

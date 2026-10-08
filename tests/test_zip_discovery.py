@@ -133,6 +133,20 @@ def test_multisheet_xlsx_uses_cash_operations_sheet(tmp_path: Path):
     assert any(tx.type == "buy" for tx in account.transactions)
 
 
+def test_discover_keeps_pln_account_with_usd_and_eur(tmp_path: Path):
+    _write_nested_pair(tmp_path)
+    pln = (FIXTURES / "xtb_currency_prefix_cash_ops.csv").read_text(encoding="utf-8")
+    pln = pln.replace("11111111", "33333333").replace("PLN to USD", "EUR to PLN").replace("EX.US", "PKO.PL")
+    folder = tmp_path / "33333333"
+    folder.mkdir()
+    name = "PLN_33333333_2006-01-01_2026-10-08.csv"
+    (folder / name).write_text(pln, encoding="utf-8")
+
+    found = discover_export_files(tmp_path)
+    assert {path.name for path in found} == {USD_NAME, EUR_NAME, name}
+    assert {load_csv(path).currency for path in found} == {"USD", "EUR", "PLN"}
+
+
 def test_extract_rejects_path_traversal(tmp_path: Path):
     archive = tmp_path / "evil.zip"
     with zipfile.ZipFile(archive, "w") as zf:

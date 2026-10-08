@@ -654,10 +654,14 @@ def _parse_transactions(
             trade = parse_trade_comment(comment, "buy")
             if trade:
                 shares, price = trade.shares, trade.price
+                if not symbol and trade.ticker:
+                    symbol = trade.ticker
         elif tx_type == "sell":
             trade = parse_trade_comment(comment, "sell")
             if trade:
                 shares, price = trade.shares, trade.price
+                if not symbol and trade.ticker:
+                    symbol = trade.ticker
         elif tx_type == "close_trade":
             realized_pnl = amount
 
