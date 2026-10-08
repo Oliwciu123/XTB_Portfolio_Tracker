@@ -54,6 +54,32 @@ python -m xtb_analyzer --currency pln --open
 
 Or open the notebook and run all cells. Replacing files in `data/` and re-running is enough — the whole pipeline rebuilds from the latest exports.
 
+## Local web app
+
+Start the upload app from the project root (same calculations as the CLI above):
+
+```bash
+source .venv/bin/activate
+python -m xtb_analyzer.web
+```
+
+Open http://127.0.0.1:8765 , drop a `.zip` of XTB account history, and the interactive HTML report replaces the page when it is ready. Optional flags match the CLI: `--port`, `--currency pln`, `--no-live`, `--no-cache`.
+
+The zip can contain either layout:
+
+- Multi-account xStation export, one workbook per currency, nested in an account folder:
+
+  ```text
+  <account>/USD_<account>_<from>_<to>.xlsx
+  <account>/EUR_<account>_<from>_<to>.xlsx
+  ```
+
+  Each workbook should include a **Cash Operations** sheet (Closed Positions and Open Positions sheets in the same file are ignored). If several date ranges exist for one account, the file with the latest end date is used.
+
+- The canonical names already used by the CLI, at the root of the zip or under a folder: `XTB_USD_cs.xlsx`, `XTB_EURO_cs.xlsx`.
+
+Unpacked uploads are written to `data/uploads/` (gitignored, same as `data/` and `output/`).
+
 ## Features
 
 ### Returns (three methods, easy to compare)
@@ -121,4 +147,4 @@ pytest
 
 ## Data privacy
 
-The `data/` and `output/` folders are gitignored. Do not commit your transaction files.
+The `data/` and `output/` folders are gitignored. Do not commit your transaction files or uploaded zips. The web app stores unpacked uploads under `data/uploads/`.
