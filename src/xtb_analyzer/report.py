@@ -69,10 +69,17 @@ def collect_report_data(
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = True,
+    on_progress=None,
 ) -> ReportData:
     currency = currency.lower()
 
+    def progress(fraction: float, message: str) -> None:
+        if on_progress is not None:
+            on_progress(fraction, message)
+
+    progress(0.35, "Pobieram ceny i kursy…")
     nav, _, positions = build_nav_series(accounts, use_cache=use_cache, live_prices=refresh_latest)
+    progress(0.55, "Liczenie wpłat i stóp zwrotu…")
     nav = attach_deposits_to_nav(nav, accounts, use_cache=use_cache)
     positions = enrich_positions_with_sectors(positions)
 
@@ -80,6 +87,7 @@ def collect_report_data(
     twr_returns = twr_daily_returns(nav, currency)
     attribution = compute_fx_attribution(accounts, nav, use_cache=use_cache)
 
+    progress(0.68, "Porównanie z benchmarkami…")
     start = twr_returns.index[0].date().isoformat() if not twr_returns.empty else nav.index[0].date().isoformat()
     end = (nav.index[-1] + pd.Timedelta(days=1)).date().isoformat()
     index_levels = fetch_benchmarks(
@@ -106,6 +114,7 @@ def collect_report_data(
     )
 
     conversion_losses = analyze_conversion_losses(accounts)
+    progress(0.88, "Składam raport…")
 
     return ReportData(
         accounts=accounts,
@@ -603,10 +612,15 @@ def generate_report(
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = True,
+    on_progress=None,
 ) -> Path:
     """Load XTB CSV exports, compute all analytics and write output/report.html."""
     data_dir = Path(data_dir)
     output_dir = Path(output_dir)
+
+    def progress(fraction: float, message: str) -> None:
+        if on_progress is not None:
+            on_progress(fraction, message)
 
     try:
         csv_files = discover_export_files(data_dir)
@@ -622,8 +636,15 @@ def generate_report(
             + describe_export_discovery(data_dir)
         )
 
+    progress(0.12, "Czytam historię kont…")
     accounts = load_accounts(csv_files)
-    data = collect_report_data(accounts, currency=currency, use_cache=use_cache, refresh_latest=refresh_latest)
+    data = collect_report_data(
+        accounts,
+        currency=currency,
+        use_cache=use_cache,
+        refresh_latest=refresh_latest,
+        on_progress=on_progress,
+    )
 
     output_dir.mkdir(parents=True, exist_ok=True)
     report_path = output_dir / "report.html"

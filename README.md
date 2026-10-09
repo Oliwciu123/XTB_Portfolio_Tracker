@@ -56,21 +56,24 @@ Or open the notebook and run all cells. Replacing files in `data/` and re-runnin
 
 ## Desktop app
 
-On Windows, install the package once (`pip install -e .` from this folder, official Python from python.org so Tk and WebView2 are available), then double-click:
+Copy this folder (or put it on a USB stick). On Windows, install Python 3 from python.org once, then double-click `xtb-analyzer.bat`. The first launch creates `.venv` in that folder and installs the report window into it, including `pywebview`. Later launches open straight away.
 
-```text
-xtb-analyzer.bat
+In PowerShell the file in the current folder needs a `.\` prefix:
+
+```powershell
+.\xtb-analyzer.bat
 ```
 
-That starts the window with `pythonw` (no console). You can also run:
+To install by hand into the Python you are using (the dot is the current folder):
 
-```bash
+```powershell
+pip install -e .
 pythonw -m xtb_analyzer.desktop
 ```
 
-A window opens. Drop the history zip onto it, or click **Wybierz archiwum ZIP**. The same pipeline as `python -m xtb_analyzer` runs, and the interactive report opens in the application window.
+If a `.venv` already exists in the folder, the `.bat` uses that environment and installs `webview` into it when it is missing. Drop the history zip onto the window, or click **Wybierz archiwum ZIP**. The path shows in the field, a progress bar runs while prices, FX, and the report are calculated, and the report opens in the application window. Live quotes are always on.
 
-On Linux or macOS the same command works (`python -m xtb_analyzer.desktop`). Optional flags: `--currency pln`, `--no-live`, `--zip path\to\file.zip`.
+On Linux or macOS: `python -m xtb_analyzer.desktop`. Optional flags: `--currency pln`, `--zip path/to/file.zip`.
 
 The zip can contain either layout. A future PLN account in the same archive is picked up next to USD and EUR:
 

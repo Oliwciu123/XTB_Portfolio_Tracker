@@ -15,6 +15,7 @@ def report_from_zip_bytes(
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = True,
+    on_progress=None,
 ) -> Path:
     """Extract a history zip and write the standard HTML report next to it."""
     work_dir = Path(work_dir)
@@ -29,6 +30,7 @@ def report_from_zip_bytes(
         currency=currency,
         use_cache=use_cache,
         refresh_latest=refresh_latest,
+        on_progress=on_progress,
     )
 
 
@@ -39,6 +41,7 @@ def report_from_zip_path(
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = True,
+    on_progress=None,
 ) -> Path:
     return report_from_zip_bytes(
         Path(zip_path).read_bytes(),
@@ -46,4 +49,5 @@ def report_from_zip_path(
         currency=currency,
         use_cache=use_cache,
         refresh_latest=refresh_latest,
+        on_progress=on_progress,
     )

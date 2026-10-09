@@ -8,6 +8,7 @@ in the application window (WebView2 on Windows, WebKit on Linux), not in a brows
 from __future__ import annotations
 
 import argparse
+import re
 import sys
 import threading
 import uuid
@@ -22,6 +23,47 @@ CARD = "#1a2332"
 FG = "#e7ecf1"
 MUTED = "#b7c3d1"
 ACCENT = "#2f6fed"
+_BRACED_PATH = re.compile(r"\{([^{}]+)\}")
+_QUOTED_OR_TOKEN = re.compile(r'"[^"]+"|\S+')
+
+
+def parse_dropped_paths(data: str) -> list[str]:
+    """File paths from a Windows or Linux drag-and-drop payload."""
+    text = str(data or "").strip()
+    if not text:
+        return []
+    braced = [match.strip().strip('"') for match in _BRACED_PATH.findall(text)]
+    if braced:
+        candidates = braced
+    else:
+        candidates = [match.strip().strip('"') for match in _QUOTED_OR_TOKEN.findall(text)]
+    return [path for path in candidates if path.lower().endswith(".zip")]
+
+
+def _asset_dir() -> Path:
+    return Path(__file__).resolve().parent / "assets"
+
+
+def apply_window_icon(root) -> None:
+    """Title-bar icon. Windows uses the .ico; other systems use the PNG."""
+    ico = _asset_dir() / "app.ico"
+    png = _asset_dir() / "app.png"
+    if sys.platform == "win32" and ico.is_file():
+        try:
+            root.iconbitmap(default=str(ico))
+            return
+        except Exception:
+            pass
+    if not png.is_file():
+        return
+    try:
+        import tkinter as tk
+
+        image = tk.PhotoImage(file=str(png))
+        root.iconphoto(True, image)
+        root._xtb_icon = image  # keep a reference; Tk drops the image otherwise
+    except Exception:
+        return
 
 
 def _prepare_webview():
@@ -76,10 +118,12 @@ class AnalyzerApp:
         self.root.geometry("680x460")
         self.root.minsize(560, 400)
         self.currency = tk.StringVar(value="pln")
-        self.no_live = tk.BooleanVar(value=False)
+        self.zip_path = tk.StringVar(value="")
         self.status = tk.StringVar(value="Wybierz albo upuść archiwum ZIP z historią kont.")
         self.report_path: Path | None = None
         self._busy = False
+        self.progress = None
+        apply_window_icon(self.root)
         self._build()
 
     def _make_root(self):
@@ -105,7 +149,7 @@ class AnalyzerApp:
         ).pack(anchor="w")
         tk.Label(
             outer,
-            text="Upuść ZIP z historią kont (USD, EUR, a w przyszłości także PLN).\n"
+            text="Upuść ZIP z historią kont.\n"
             "Po przeliczeniu zobaczysz pełny raport w tym programie.",
             bg=BG,
             fg=MUTED,
@@ -122,10 +166,27 @@ class AnalyzerApp:
             relief="groove",
             bd=1,
             padx=16,
-            pady=36,
+            pady=28,
         )
         drop.pack(fill="x")
+        self._drop_label = drop
         self._enable_drop(drop)
+
+        field = tk.Entry(
+            outer,
+            textvariable=self.zip_path,
+            readonlybackground=CARD,
+            fg=FG,
+            bg=CARD,
+            insertbackground=FG,
+            relief="flat",
+            font=("Segoe UI", 10),
+        )
+        field.configure(state="readonly")
+        field.pack(fill="x", pady=(10, 0), ipady=6)
+        self._enable_drop(field)
+        self._enable_drop(outer)
+        self._enable_drop(self.root)
 
         tk.Button(
             outer,
@@ -148,17 +209,24 @@ class AnalyzerApp:
         menu = tk.OptionMenu(row, self.currency, "pln", "usd", "eur")
         menu.configure(bg=CARD, fg=FG, highlightthickness=0, font=("Segoe UI", 10))
         menu.pack(side="left", padx=(8, 16))
-        tk.Checkbutton(
-            row,
-            text="bez pobierania bieżących notowań",
-            variable=self.no_live,
-            bg=BG,
-            fg=MUTED,
-            selectcolor=CARD,
-            activebackground=BG,
-            activeforeground=FG,
-            font=("Segoe UI", 10),
-        ).pack(side="left")
+
+        style = self._ttk.Style(self.root)
+        style.theme_use("clam")
+        style.configure(
+            "Xtb.Horizontal.TProgressbar",
+            troughcolor=CARD,
+            background=ACCENT,
+            bordercolor=CARD,
+            lightcolor=ACCENT,
+            darkcolor=ACCENT,
+        )
+        self.progress = self._ttk.Progressbar(
+            outer,
+            style="Xtb.Horizontal.TProgressbar",
+            mode="determinate",
+            maximum=100,
+        )
+        self.progress.pack(fill="x", pady=(16, 0))
 
         tk.Label(
             outer,
@@ -182,15 +250,23 @@ class AnalyzerApp:
             return
 
     def _on_drop(self, event) -> None:
+        raw = getattr(event, "data", "")
         try:
-            paths = self.root.tk.splitlist(event.data)
+            listed = [str(path) for path in self.root.tk.splitlist(raw)]
         except Exception:
-            paths = [event.data]
-        files = [path for path in paths if str(path).lower().endswith(".zip")]
-        if not files:
+            listed = []
+        files = parse_dropped_paths(raw)
+        for path in listed:
+            files.extend(parse_dropped_paths(path))
+        # Preserve order, drop duplicates.
+        seen: list[str] = []
+        for path in files:
+            if path not in seen:
+                seen.append(path)
+        if not seen:
             self.status.set("Upuść plik .zip z historią kont XTB.")
             return
-        self._start(files[0])
+        self._choose(seen[0])
 
     def _browse(self) -> None:
         from tkinter import filedialog
@@ -200,19 +276,37 @@ class AnalyzerApp:
             filetypes=[("Archiwum ZIP", "*.zip"), ("Wszystkie pliki", "*.*")],
         )
         if path:
-            self._start(path)
+            self._choose(path)
+
+    def _choose(self, path: str) -> None:
+        self.zip_path.set(str(path))
+        self._drop_label.configure(text=Path(path).name)
+        self._start(path)
+
+    def _set_progress(self, fraction: float, message: str) -> None:
+        if self.progress is not None:
+            self.progress["value"] = max(0, min(100, int(fraction * 100)))
+        self.status.set(message)
 
     def _start(self, path: str) -> None:
         if self._busy:
             return
         self._busy = True
         currency = self.currency.get()
-        refresh_latest = not bool(self.no_live.get())
-        self.status.set("Liczenie statystyk, porównań i benchmarków…")
+        self._set_progress(0.02, "Liczenie statystyk, porównań i benchmarków…")
+
+        def on_progress(fraction: float, message: str) -> None:
+            self.root.after(0, lambda: self._set_progress(fraction, message))
 
         def work() -> None:
             try:
-                report = self.load_zip(path, currency=currency, refresh_latest=refresh_latest, present=False)
+                report = self.load_zip(
+                    path,
+                    currency=currency,
+                    refresh_latest=True,
+                    present=False,
+                    on_progress=on_progress,
+                )
             except Exception as exc:  # noqa: BLE001 — show the message in the window
                 self.root.after(0, lambda: self._fail(exc))
                 return
@@ -229,6 +323,7 @@ class AnalyzerApp:
         refresh_latest: bool = True,
         present: bool = False,
         upload_root: Path | None = None,
+        on_progress=None,
     ) -> Path:
         path = Path(path)
         if path.suffix.lower() != ".zip":
@@ -241,6 +336,7 @@ class AnalyzerApp:
             currency=currency,
             use_cache=use_cache,
             refresh_latest=refresh_latest,
+            on_progress=on_progress,
         )
         self.report_path = report
         if present:
@@ -263,6 +359,8 @@ class AnalyzerApp:
 
     def _fail(self, exc: BaseException) -> None:
         self._busy = False
+        if self.progress is not None:
+            self.progress["value"] = 0
         message = str(exc).strip() or exc.__class__.__name__
         self.status.set(message)
         try:
@@ -279,13 +377,11 @@ def main(argv: list[str] | None = None) -> int:
         description="Okno aplikacji: wgraj ZIP z historią XTB i zobacz raport.",
     )
     parser.add_argument("--currency", default="pln", choices=["pln", "usd", "eur"])
-    parser.add_argument("--no-live", action="store_true", help="nie pobieraj bieżących notowań")
     parser.add_argument("--zip", dest="zip_path", default=None, help="od razu otwórz ten plik ZIP")
     args = parser.parse_args(argv)
 
     app = AnalyzerApp()
     app.currency.set(args.currency)
-    app.no_live.set(args.no_live)
     if args.zip_path:
         app.root.after(200, lambda: app._start(args.zip_path))
     app.root.mainloop()

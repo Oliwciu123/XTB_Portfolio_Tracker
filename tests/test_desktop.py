@@ -33,7 +33,7 @@ def _history_zip(tmp_path: Path) -> Path:
 def test_zip_bytes_run_existing_report_pipeline(tmp_path: Path, monkeypatch):
     seen: dict[str, object] = {}
 
-    def fake_generate_report(data_dir, output_dir, currency="pln", use_cache=True, refresh_latest=True):
+    def fake_generate_report(data_dir, output_dir, currency="pln", use_cache=True, refresh_latest=True, on_progress=None):
         files = discover_export_files(data_dir)
         seen["files"] = sorted(path.name for path in files)
         seen["currencies"] = sorted(path.name.split("_", 1)[0] for path in files)
@@ -59,6 +59,48 @@ def test_zip_bytes_run_existing_report_pipeline(tmp_path: Path, monkeypatch):
     assert seen["refresh_latest"] is False
 
 
+def test_windows_drop_fills_a_zip_path():
+    from xtb_analyzer.desktop import parse_dropped_paths
+
+    assert parse_dropped_paths("{C:/Users/me/history.zip}") == ["C:/Users/me/history.zip"]
+    assert parse_dropped_paths("{C:\\Users\\me\\a.zip} {C:\\Users\\me\\notes.txt}") == ["C:\\Users\\me\\a.zip"]
+
+
+def test_window_has_progress_and_no_offline_switch(tmp_path: Path, monkeypatch):
+    pytest.importorskip("tkinter")
+    import tkinter as tk
+
+    from xtb_analyzer.desktop import AnalyzerApp
+
+    try:
+        root = tk.Tk()
+    except tk.TclError:
+        pytest.skip("no display")
+    root.withdraw()
+    app = AnalyzerApp(root)
+    texts: list[str] = []
+
+    def walk(widget) -> None:
+        try:
+            texts.append(str(widget.cget("text")))
+        except tk.TclError:
+            pass
+        for child in widget.winfo_children():
+            walk(child)
+
+    walk(app.root)
+    blob = " ".join(texts)
+    assert "przyszłości" not in blob
+    assert "bieżących notowań" not in blob
+    assert "historią kont" in blob
+    assert app.progress is not None
+    monkeypatch.setattr(app, "_start", lambda path: None)
+    app._choose(str(tmp_path / "history.zip"))
+    assert app.zip_path.get().endswith("history.zip")
+    assert app._drop_label.cget("text") == "history.zip"
+    root.destroy()
+
+
 def test_window_load_zip_without_opening_report(tmp_path: Path, monkeypatch):
     pytest.importorskip("tkinter")
     import tkinter as tk
@@ -71,7 +113,7 @@ def test_window_load_zip_without_opening_report(tmp_path: Path, monkeypatch):
         pytest.skip("no display")
     root.withdraw()
 
-    def fake_generate_report(data_dir, output_dir, currency="pln", use_cache=True, refresh_latest=True):
+    def fake_generate_report(data_dir, output_dir, currency="pln", use_cache=True, refresh_latest=True, on_progress=None):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         report = output_dir / "report.html"
