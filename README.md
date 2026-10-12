@@ -71,7 +71,7 @@ pip install -e .
 pythonw -m xtb_analyzer.desktop
 ```
 
-If a `.venv` already exists in the folder, the `.bat` uses that environment and installs `webview` into it when it is missing. Drop the history zip onto the window, or click **Wybierz archiwum ZIP**. The path shows in the field, a progress bar runs while prices, FX, and the report are calculated, and the report opens in the application window. Live quotes are always on.
+If a `.venv` already exists in the folder, the `.bat` uses only `.venv\Scripts\python.exe -m pip` and installs `webview` into it when it is missing. A failed install writes the full pip log to `install-error.txt` in this folder. If an editable install cannot finish, the same interpreter installs the runtime packages and still opens the window. Drop the history zip onto the window, or click **Wybierz archiwum ZIP**. The path shows in the field, a progress bar runs while prices, FX, and the report are calculated, and the report opens in the application window. Live quotes are always on.
 
 On Linux or macOS: `python -m xtb_analyzer.desktop`. Optional flags: `--currency pln`, `--zip path/to/file.zip`.
 

@@ -5,4 +5,5 @@ output/
 __pycache__/
 *.pyc
 .pytest_cache/
+install-error.txt
 .ipynb_checkpoints/
