@@ -92,7 +92,8 @@ def test_window_has_progress_and_no_offline_switch(tmp_path: Path, monkeypatch):
     blob = " ".join(texts)
     assert "przyszłości" not in blob
     assert "bieżących notowań" not in blob
-    assert "historią kont" in blob
+    assert "USD/EUR" not in blob
+    assert "ZIP z historią kont" in blob
     assert app.progress is not None
     monkeypatch.setattr(app, "_start", lambda path: None)
     app._choose(str(tmp_path / "history.zip"))

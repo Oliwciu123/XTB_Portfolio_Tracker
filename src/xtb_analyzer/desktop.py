@@ -1,8 +1,10 @@
 """Desktop window: choose an XTB history zip and show the HTML report.
 
-Windows: double-click ``xtb-analyzer.bat`` or run ``pythonw -m xtb_analyzer.desktop``.
-The same calculations as ``python -m xtb_analyzer`` run locally. The report opens
-in the application window (WebView2 on Windows, WebKit on Linux), not in a browser.
+Windows (portable): build once with ``build_windows.bat``, then double-click
+``XTBPortfolioAnalyzer.exe`` (or ``Uruchom.bat``) in the copied folder.
+Development: ``python -m xtb_analyzer.desktop`` or ``xtb-analyzer.bat``.
+The report opens in the application window, not in a browser. Live quotes
+are always fetched.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ import threading
 import uuid
 from pathlib import Path
 
-from xtb_analyzer.parser import find_project_root
+from xtb_analyzer.paths import app_writable_root, asset_path, ensure_app_cwd
 from xtb_analyzer.session import report_from_zip_path
 from xtb_analyzer.zip_import import ZipImportError
 
@@ -23,6 +25,7 @@ CARD = "#1a2332"
 FG = "#e7ecf1"
 MUTED = "#b7c3d1"
 ACCENT = "#2f6fed"
+ACCENT_SOFT = "#3d7cf0"
 _BRACED_PATH = re.compile(r"\{([^{}]+)\}")
 _QUOTED_OR_TOKEN = re.compile(r'"[^"]+"|\S+')
 
@@ -40,14 +43,10 @@ def parse_dropped_paths(data: str) -> list[str]:
     return [path for path in candidates if path.lower().endswith(".zip")]
 
 
-def _asset_dir() -> Path:
-    return Path(__file__).resolve().parent / "assets"
-
-
 def apply_window_icon(root) -> None:
     """Title-bar icon. Windows uses the .ico; other systems use the PNG."""
-    ico = _asset_dir() / "app.ico"
-    png = _asset_dir() / "app.png"
+    ico = asset_path("assets", "app.ico")
+    png = asset_path("assets", "app.png")
     if sys.platform == "win32" and ico.is_file():
         try:
             root.iconbitmap(default=str(ico))
@@ -119,12 +118,15 @@ class AnalyzerApp:
         self.root.minsize(560, 400)
         self.currency = tk.StringVar(value="pln")
         self.zip_path = tk.StringVar(value="")
-        self.status = tk.StringVar(value="Wybierz albo upuść archiwum ZIP z historią kont.")
+        self.status = tk.StringVar(value="Wybierz albo upuść ZIP z historią kont.")
         self.report_path: Path | None = None
         self._busy = False
         self.progress = None
+        self._pulse_job = None
+        self._drop_pulse = 0
         apply_window_icon(self.root)
         self._build()
+        self._pulse_drop_zone()
 
     def _make_root(self):
         try:
@@ -142,15 +144,15 @@ class AnalyzerApp:
         outer.pack(fill="both", expand=True)
         tk.Label(
             outer,
-            text="Raport portfela XTB",
+            text="Analizator portfela XTB",
             bg=BG,
             fg=FG,
             font=("Segoe UI", 20, "bold"),
         ).pack(anchor="w")
         tk.Label(
             outer,
-            text="Upuść ZIP z historią kont.\n"
-            "Po przeliczeniu zobaczysz pełny raport w tym programie.",
+            text="ZIP z historią kont.\n"
+            "Po przeliczeniu pełny raport otworzy się w tym oknie.",
             bg=BG,
             fg=MUTED,
             justify="left",
@@ -167,6 +169,9 @@ class AnalyzerApp:
             bd=1,
             padx=16,
             pady=28,
+            highlightthickness=1,
+            highlightbackground=ACCENT,
+            highlightcolor=ACCENT,
         )
         drop.pack(fill="x")
         self._drop_label = drop
@@ -238,6 +243,18 @@ class AnalyzerApp:
             font=("Segoe UI", 10),
         ).pack(anchor="w", pady=(18, 0))
 
+    def _pulse_drop_zone(self) -> None:
+        """Subtle border pulse so the drop target feels alive while idle."""
+        if self._busy or not hasattr(self, "_drop_label"):
+            return
+        self._drop_pulse = (self._drop_pulse + 1) % 2
+        color = ACCENT_SOFT if self._drop_pulse else ACCENT
+        try:
+            self._drop_label.configure(highlightbackground=color, highlightcolor=color)
+        except Exception:
+            return
+        self._pulse_job = self.root.after(900, self._pulse_drop_zone)
+
     def _enable_drop(self, widget) -> None:
         try:
             from tkinterdnd2 import DND_FILES
@@ -264,7 +281,7 @@ class AnalyzerApp:
             if path not in seen:
                 seen.append(path)
         if not seen:
-            self.status.set("Upuść plik .zip z historią kont XTB.")
+            self.status.set("Upuść ZIP z historią kont.")
             return
         self._choose(seen[0])
 
@@ -292,11 +309,26 @@ class AnalyzerApp:
         if self._busy:
             return
         self._busy = True
+        if self._pulse_job is not None:
+            try:
+                self.root.after_cancel(self._pulse_job)
+            except Exception:
+                pass
+            self._pulse_job = None
         currency = self.currency.get()
         self._set_progress(0.02, "Liczenie statystyk, porównań i benchmarków…")
+        if self.progress is not None:
+            self.progress.configure(mode="indeterminate")
+            self.progress.start(12)
 
         def on_progress(fraction: float, message: str) -> None:
-            self.root.after(0, lambda: self._set_progress(fraction, message))
+            def apply() -> None:
+                if self.progress is not None and str(self.progress["mode"]) == "indeterminate":
+                    self.progress.stop()
+                    self.progress.configure(mode="determinate")
+                self._set_progress(fraction, message)
+
+            self.root.after(0, apply)
 
         def work() -> None:
             try:
@@ -327,8 +359,8 @@ class AnalyzerApp:
     ) -> Path:
         path = Path(path)
         if path.suffix.lower() != ".zip":
-            raise ZipImportError("Wybierz archiwum .zip z historią kont XTB.")
-        root = upload_root or (find_project_root() / "data" / "uploads")
+            raise ZipImportError("Wybierz ZIP z historią kont.")
+        root = upload_root or (app_writable_root() / "data" / "uploads")
         work = root / uuid.uuid4().hex
         report = report_from_zip_path(
             path,
@@ -346,6 +378,13 @@ class AnalyzerApp:
     def _present(self, report: Path) -> None:
         self._busy = False
         self.report_path = report
+        if self.progress is not None:
+            try:
+                self.progress.stop()
+            except Exception:
+                pass
+            self.progress.configure(mode="determinate")
+            self.progress["value"] = 100
         self.status.set("Otwieram raport…")
         self.root.update_idletasks()
         try:
@@ -360,9 +399,15 @@ class AnalyzerApp:
     def _fail(self, exc: BaseException) -> None:
         self._busy = False
         if self.progress is not None:
+            try:
+                self.progress.stop()
+            except Exception:
+                pass
+            self.progress.configure(mode="determinate")
             self.progress["value"] = 0
         message = str(exc).strip() or exc.__class__.__name__
         self.status.set(message)
+        self._pulse_drop_zone()
         try:
             from tkinter import messagebox
 
@@ -372,6 +417,7 @@ class AnalyzerApp:
 
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_app_cwd()
     parser = argparse.ArgumentParser(
         prog="xtb_analyzer.desktop",
         description="Okno aplikacji: wgraj ZIP z historią XTB i zobacz raport.",
