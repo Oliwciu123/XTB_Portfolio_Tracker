@@ -37,3 +37,11 @@ There is no long-running server or database. See `README.md` for full usage and 
 - Report generation needs **outbound network**: Yahoo Finance (prices/benchmarks via `yfinance`) and
   the NBP API (`api.nbp.pl`, PLN FX rates). Use `--no-live` and/or `--no-cache` to control fetching.
   Charts in the HTML load Plotly.js from a CDN, so viewing the report also needs internet.
+
+### Portable Windows desktop app
+
+- Preferred user path: on Windows run `build_windows.bat` once → copy
+  `dist/XTBPortfolioAnalyzer/` → double-click `XTBPortfolioAnalyzer.exe`.
+- Spec: `packaging/xtb_portfolio_analyzer.spec` (PyInstaller one-folder). Entry: `run_desktop.py`.
+- Desktop module: `python -m xtb_analyzer.desktop` (always live quotes; ZIP drop + progress).
+- Do not treat `pip install -e .` + system Python as the end-user path.

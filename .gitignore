@@ -1,8 +1,16 @@
 data/
 output/
 .venv/
+.venv-build/
 .cursor/
 __pycache__/
 *.pyc
 .pytest_cache/
 .ipynb_checkpoints/
+build/
+dist/
+*.egg-info/
+packaging/*.toc
+packaging/*.pkg
+packaging/warn-*.txt
+packaging/xref-*.html

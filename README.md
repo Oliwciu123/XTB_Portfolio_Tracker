@@ -34,7 +34,7 @@ python -c "import xtb_analyzer; print(xtb_analyzer.__file__)"
 
 ## Usage
 
-1. Export account data from XTB for each currency (USD / EUR).
+1. Export account data from XTB for each currency (USD / EUR / PLN).
 2. Put these files in `data/`:
    - `XTB_USD_cs.xlsx`
    - `XTB_EURO_cs.xlsx`
@@ -54,6 +54,48 @@ python -m xtb_analyzer --currency pln --open
 
 Or open the notebook and run all cells. Replacing files in `data/` and re-running is enough — the whole pipeline rebuilds from the latest exports.
 
+## Desktop app (Windows, portable)
+
+A real Windows window — not a website. Drop a ZIP with XTB account history; the same stats, comparisons, and benchmarks as the CLI run locally with live quotes. The report opens inside the program.
+
+### What Oliwier copies / clicks
+
+1. **One-time build** (on any Windows PC that has Python 3.10+ from [python.org](https://www.python.org/downloads/), with “Add to PATH”):
+   ```text
+   build_windows.bat
+   ```
+   This creates `dist\XTBPortfolioAnalyzer\` (PyInstaller one-folder: `.exe` + `_internal`).
+
+2. **Copy the whole folder** `dist\XTBPortfolioAnalyzer` to a USB stick or zip it for a colleague. You do **not** need Python on the target PC.
+
+3. **Double-click** `XTBPortfolioAnalyzer.exe` (or `Uruchom.bat` in that folder).
+
+4. Drop the history ZIP onto the window (or **Wybierz archiwum ZIP**). A progress bar runs while prices, FX, and the report are calculated. Internet is required for Yahoo Finance and NBP.
+
+`xtb-analyzer.bat` at the repo root starts the portable `.exe` when `dist\XTBPortfolioAnalyzer\` (or a sibling `XTBPortfolioAnalyzer\`) exists. Otherwise it offers an optional developer venv path.
+
+### Developer run (source)
+
+```powershell
+pip install -e ".[dev]"
+python -m xtb_analyzer.desktop
+```
+
+Optional flags: `--currency pln`, `--zip path\to\file.zip`. On Linux/macOS the same module works when a WebView backend is available.
+
+### ZIP layout
+
+USD, EUR, and PLN account files are accepted (PLN may be absent). Example:
+
+```text
+<account>/USD_<account>_<from>_<to>.xlsx
+<account>/EUR_<account>_<from>_<to>.xlsx
+<account>/PLN_<account>_<from>_<to>.xlsx
+```
+
+Each workbook’s **Cash Operations** sheet is used. Closed Positions / Open Positions sheets are ignored. If several date ranges exist for one account, the file with the latest end date is used. Canonical names also work: `XTB_USD_cs.xlsx`, `XTB_EURO_cs.xlsx`.
+
+Unpacked uploads and price/FX caches are written under `data/` next to the `.exe` (or project root in source). That folder is gitignored — do not commit private exports.
 ## Features
 
 ### Returns (three methods, easy to compare)
@@ -110,7 +152,15 @@ src/xtb_analyzer/
   sectors.py        # sector enrichment (Yahoo)
   charts.py         # Plotly figures (dark theme)
   report.py         # HTML report generator
+  session.py        # history zip → HTML report
+  desktop.py        # desktop window (zip picker + report)
+  paths.py          # portable / frozen app paths
   __main__.py       # CLI: python -m xtb_analyzer
+packaging/
+  xtb_portfolio_analyzer.spec   # PyInstaller one-folder
+  Uruchom.bat                   # launcher copied into dist
+build_windows.bat               # one-time Windows build
+run_desktop.py                  # PyInstaller entry
 ```
 
 ## Tests
@@ -121,4 +171,4 @@ pytest
 
 ## Data privacy
 
-The `data/` and `output/` folders are gitignored. Do not commit your transaction files.
+The `data/` and `output/` folders are gitignored. Do not commit your transaction files or uploaded zips. The desktop app stores unpacked uploads under `data/uploads/`.

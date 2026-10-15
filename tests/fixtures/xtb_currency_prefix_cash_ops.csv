@@ -1,0 +1,8 @@
+Account number;11111111
+Cash Operations
+Date from (UTC);2006-01-01 00:00:00
+Date to (UTC);2026-10-08 00:00:00
+Type;Instrument;Ticker;Category;Time;Amount;ID;Comment;Product;Position ID
+Transfer;;;CASH;2025-11-04 21:48:19;100,00;1001;Currency conversion, PLN to USD from TA: 10000000 to: 11111111, Exchange rate:0.250000;My Trades;
+Stock purchase;Example Co;EX.US;STOCK;2025-11-04 21:52:58;-50,00;1002;OPEN BUY 1 @ 50.00;My Trades;1
+Free funds interest;;;CASH;2025-12-04 15:15:21;0,12;1003;Free-funds Interest;My Trades;

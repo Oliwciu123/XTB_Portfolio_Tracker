@@ -9,6 +9,10 @@ Detected formats
 3. **XTB V2 Cash Operations CSV (2025+)** — 4-line metadata preamble, then
    ``Type;Ticker;Instrument;Time;Amount;ID;Comment;Product``.
    Amounts use European decimals (``1.000,00``). Account id is in the preamble.
+4. **Multi-account xStation XLSX (zip)** — one workbook per currency account,
+   often nested as ``<account>/USD_<account>_<from>_<to>.xlsx``. Sheets are
+   Closed Positions, Cash Operations, and Open Positions. The Cash Operations
+   header is ``Type;Instrument;Ticker;Category;Time;Amount;ID;Comment;Product;Position ID``.
 """
 
 from __future__ import annotations
@@ -446,6 +450,7 @@ def _find_transaction_header(rows: list[list[object]], start: int = 0) -> tuple[
         "  • ID;Type;Time;Comment;Symbol;Amount\n"
         "  • ID;Type;Time;Symbol;Comment;Amount\n"
         "  • Type;Ticker;Instrument;Time;Amount;ID;Comment;Product  (XTB 2025+)\n"
+        "  • Type;Instrument;Ticker;Category;Time;Amount;ID;Comment;Product;Position ID\n"
         "If you exported Closed Positions, use Cash Operations instead "
         "(xStation → Historia → Cash Operations → Export).\n"
         f"First rows of the file were:\n{preview_text}"
@@ -649,10 +654,14 @@ def _parse_transactions(
             trade = parse_trade_comment(comment, "buy")
             if trade:
                 shares, price = trade.shares, trade.price
+                if not symbol and trade.ticker:
+                    symbol = trade.ticker
         elif tx_type == "sell":
             trade = parse_trade_comment(comment, "sell")
             if trade:
                 shares, price = trade.shares, trade.price
+                if not symbol and trade.ticker:
+                    symbol = trade.ticker
         elif tx_type == "close_trade":
             realized_pnl = amount
 
@@ -792,9 +801,26 @@ def describe_export_discovery(data_dir: str | Path) -> str:
             "Upewnij się, że pliki leżą w katalogu projektu: "
             f"{find_project_root() / 'data'}"
         )
+    nested = []
+    if data_dir.is_dir():
+        for path in sorted(data_dir.rglob("*"), key=lambda p: p.as_posix().lower()):
+            if not path.is_file() or path.parent == data_dir:
+                continue
+            if path.suffix.lower() not in {".xlsx", ".xlsm", ".xls", ".csv"}:
+                continue
+            if any(part in {".git", "__pycache__", "cache", "output", ".venv"} for part in path.parts):
+                continue
+            nested.append(path)
+            if len(nested) >= 40:
+                break
+        if nested:
+            lines.append("Pliki w podkatalogach:")
+            for path in nested:
+                lines.append(f"  • {path.relative_to(data_dir).as_posix()} ({path.stat().st_size} bajtów)")
     lines.append(
         "Oczekiwane nazwy: XTB_USD_cs.xlsx, XTB_EURO_cs.xlsx "
-        "(xStation → Historia → Eksportuj jako XLSX)."
+        "(xStation → Historia → Eksportuj jako XLSX), "
+        "albo archiwum wielowalutowe: <konto>/USD_<konto>_<od>_<do>.xlsx i EUR_….xlsx."
     )
     return "\n".join(lines)
 
@@ -879,19 +905,78 @@ def _is_canonical_account_report(path: Path) -> bool:
     return _looks_like_currency_cs_export(path)
 
 
-def discover_export_files(data_dir: str | Path) -> list[Path]:
-    """Find XTB Cash Operations exports in ``data_dir`` (CSV and XLSX).
+# xStation multi-account zip: <account>/USD_<account>_<from>_<to>.xlsx
+CURRENCY_PREFIXED_EXPORT_RE = re.compile(
+    r"^(?P<currency>USD|EUR|EURO|PLN|GBP)_(?P<account>\d{5,})"
+    r"_(?P<start>\d{4}-\d{2}-\d{2})_(?P<end>\d{4}-\d{2}-\d{2})"
+    r"\.(?:xlsx|xlsm|xls|csv)$",
+    re.IGNORECASE,
+)
+CURRENCY_PREFIX_LOOSE_RE = re.compile(
+    r"^(?:USD|EUR|EURO|PLN|GBP)_.+\.(?:xlsx|xlsm|xls|csv)$",
+    re.IGNORECASE,
+)
+_TREE_SKIP_DIRS = {".git", "__pycache__", "__MACOSX", "cache", "output", ".venv"}
 
-    Preferred (canonical) names — used exclusively when present and parseable:
-      ``XTB_USD_cs.xlsx``, ``XTB_EURO_cs.xlsx`` / ``XTB_EUR_cs.xlsx``.
 
-    If any of those canonical files is present but unreadable, raise ``ValueError``
-    listing every failure. Never silently keep only the subset that parsed.
-    """
-    data_dir = Path(data_dir)
-    if not data_dir.is_dir():
-        return []
+def _is_currency_prefixed_export(path: Path) -> bool:
+    """True for ``USD_<account>_<from>_<to>.xlsx`` and similar currency-first names."""
+    return bool(CURRENCY_PREFIX_LOOSE_RE.match(path.name))
 
+
+def _normalize_currency_code(code: str) -> str:
+    code = code.upper()
+    return "EUR" if code == "EURO" else code
+
+
+def _prefixed_group_key(path: Path) -> tuple[str, str]:
+    match = CURRENCY_PREFIXED_EXPORT_RE.match(path.name)
+    if match:
+        return _normalize_currency_code(match.group("currency")), match.group("account")
+    hint = _currency_hint_from_path(path) or "UNK"
+    parent = path.parent.name
+    account = parent if parent.isdigit() and len(parent) >= 5 else path.stem.lower()
+    return hint, account
+
+
+def _prefixed_sort_key(path: Path) -> tuple:
+    match = CURRENCY_PREFIXED_EXPORT_RE.match(path.name)
+    end = match.group("end") if match else ""
+    try:
+        size = path.stat().st_size
+    except OSError:
+        size = 0
+    return (end, size, path.name.lower())
+
+
+def _pick_latest_currency_exports(paths: list[Path]) -> list[Path]:
+    """Keep one file per currency account — the export whose end date is latest."""
+    groups: dict[tuple[str, str], list[Path]] = {}
+    for path in paths:
+        groups.setdefault(_prefixed_group_key(path), []).append(path)
+    return [max(group, key=_prefixed_sort_key) for group in groups.values()]
+
+
+def _matches_export_name(path: Path) -> bool:
+    if path.suffix.lower() not in {".xlsx", ".xlsm", ".xls", ".csv"}:
+        return False
+    if _is_canonical_account_report(path) or _looks_like_currency_cs_export(path):
+        return True
+    if _is_currency_prefixed_export(path):
+        return True
+    lowered = path.name.lower()
+    if lowered.startswith("xtb_"):
+        return True
+    if "cash" in lowered and ("ops" in lowered or "operation" in lowered):
+        return True
+    if lowered.startswith("account_"):
+        return True
+    if lowered.startswith("xstation") and "cash" in lowered:
+        return True
+    return False
+
+
+def _top_level_candidates(data_dir: Path) -> dict[str, Path]:
     patterns = (
         "XTB_*_cs.xlsx",
         "XTB_*_cs.xlsm",
@@ -922,14 +1007,41 @@ def discover_export_files(data_dir: str | Path) -> list[Path]:
                 continue
             candidates[path.name.lower()] = path
 
-    # Directory scan catches odd casing / unicode underscores missed by glob.
+    # Directory scan catches odd casing / unicode underscores missed by glob,
+    # plus currency-first names from an xStation multi-account zip.
     for path in data_dir.iterdir():
         if not path.is_file() or path.name.startswith("~"):
             continue
         if POSITIONS_FILENAME_RE.search(path.name):
             continue
-        if _is_canonical_account_report(path) or _looks_like_currency_cs_export(path):
+        if (
+            _is_canonical_account_report(path)
+            or _looks_like_currency_cs_export(path)
+            or _is_currency_prefixed_export(path)
+        ):
             candidates[path.name.lower()] = path
+    return candidates
+
+
+def _tree_candidates(data_dir: Path) -> dict[str, Path]:
+    """Exports nested in account folders (the layout inside an XTB history zip)."""
+    candidates: dict[str, Path] = {}
+    for path in data_dir.rglob("*"):
+        if not path.is_file() or path.name.startswith("~") or path.name.startswith("."):
+            continue
+        if any(part in _TREE_SKIP_DIRS for part in path.parts):
+            continue
+        if POSITIONS_FILENAME_RE.search(path.name):
+            continue
+        if not _matches_export_name(path):
+            continue
+        candidates[path.relative_to(data_dir).as_posix().lower()] = path
+    return candidates
+
+
+def _select_export_files(candidates: dict[str, Path]) -> list[Path]:
+    if not candidates:
+        return []
 
     statuses = {path: _cash_operations_status(path) for path in candidates.values()}
     named_canonical = sorted(
@@ -962,7 +1074,51 @@ def discover_export_files(data_dir: str | Path) -> list[Path]:
             )
         return ok
 
+    prefixed = [p for p in candidates.values() if _is_currency_prefixed_export(p)]
+    chosen_prefixed = _pick_latest_currency_exports(prefixed)
+    chosen_ids = {id(p) for p in chosen_prefixed}
+    failed_prefixed = [(p, statuses[p][1]) for p in chosen_prefixed if not statuses[p][0]]
+    if failed_prefixed:
+        details = [
+            f"  • {p.name} ({p.stat().st_size} B): {reason}" for p, reason in failed_prefixed
+        ]
+        ok_names = ", ".join(p.name for p in chosen_prefixed if statuses[p][0]) or "(żaden)"
+        raise ValueError(
+            "Nie wszystkie eksporty walutowe XTB dały się odczytać.\n"
+            f"OK: {ok_names}\n"
+            "Błędy:\n" + "\n".join(details)
+        )
+
+    pool = [
+        p
+        for p in candidates.values()
+        if not _is_currency_prefixed_export(p) or id(p) in chosen_ids
+    ]
     return sorted(
-        (p for p, (success, _) in statuses.items() if success),
+        (p for p in pool if statuses[p][0]),
         key=lambda p: p.name.lower(),
     )
+
+
+def discover_export_files(data_dir: str | Path) -> list[Path]:
+    """Find XTB Cash Operations exports in ``data_dir`` (CSV and XLSX).
+
+    Preferred (canonical) names — used exclusively when present and parseable:
+      ``XTB_USD_cs.xlsx``, ``XTB_EURO_cs.xlsx`` / ``XTB_EUR_cs.xlsx``.
+
+    Also accepts an extracted multi-account xStation zip: one file per currency
+    account, nested as ``<account>/USD_<account>_<from>_<to>.xlsx`` (EUR/EURO/PLN
+    the same way). When several date ranges exist for one account, the file with
+    the latest end date is used.
+
+    If any of those canonical files is present but unreadable, raise ``ValueError``
+    listing every failure. Never silently keep only the subset that parsed.
+    """
+    data_dir = Path(data_dir)
+    if not data_dir.is_dir():
+        return []
+
+    top = _select_export_files(_top_level_candidates(data_dir))
+    if top:
+        return top
+    return _select_export_files(_tree_candidates(data_dir))
