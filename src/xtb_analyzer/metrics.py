@@ -247,6 +247,196 @@ def realized_pnl_summary(accounts: list[Account]) -> pd.DataFrame:
     return summary
 
 
+def company_pnl_summary(
+    accounts: list[Account],
+    positions: pd.DataFrame,
+    currency: str = "pln",
+    fx_row: pd.Series | None = None,
+    use_cache: bool = True,
+) -> pd.DataFrame:
+    """Compute realized, unrealized and total P&L for every company, sorted from highest profit to largest loss."""
+    from xtb_analyzer.fx import convert_value, fetch_fx_rates
+
+    target_curr = currency.upper()
+    if fx_row is None:
+        all_txs = [tx for acc in accounts for tx in acc.transactions]
+        if all_txs:
+            start = min(tx.timestamp for tx in all_txs).date().isoformat()
+            end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
+            fx_df = fetch_fx_rates(start=start, end=end, use_cache=use_cache, refresh_latest=False)
+            fx_row = fx_df.iloc[-1] if not fx_df.empty else pd.Series(dtype=float)
+        else:
+            fx_row = pd.Series(dtype=float)
+
+    records: dict[tuple[str, str], dict[str, object]] = {}
+    for acc in accounts:
+        for tx in acc.transactions:
+            if not tx.symbol:
+                continue
+            key = (tx.symbol, acc.currency.upper())
+            rec = records.setdefault(
+                key,
+                {
+                    "bought_local": 0.0,
+                    "sold_local": 0.0,
+                    "close_trade_local": 0.0,
+                    "has_close_trade": False,
+                    "has_sell": False,
+                    "dividends_local": 0.0,
+                },
+            )
+            if tx.type == "buy":
+                rec["bought_local"] = float(rec["bought_local"]) + (-float(tx.amount))
+            elif tx.type == "sell":
+                rec["sold_local"] = float(rec["sold_local"]) + float(tx.amount)
+                rec["has_sell"] = True
+            elif tx.type == "close_trade":
+                rec["sold_local"] = float(rec["sold_local"]) + float(tx.amount)
+                rec["close_trade_local"] = float(rec["close_trade_local"]) + float(tx.amount)
+                rec["has_close_trade"] = True
+            elif tx.type in ("dividend", "withholding_tax"):
+                rec["dividends_local"] = float(rec["dividends_local"]) + float(tx.amount)
+
+    if not positions.empty:
+        for _, pos_row in positions.iterrows():
+            key = (str(pos_row["symbol"]), str(pos_row["currency"]).upper())
+            records.setdefault(
+                key,
+                {
+                    "bought_local": float(pos_row.get("cost_basis", 0.0)),
+                    "sold_local": 0.0,
+                    "close_trade_local": 0.0,
+                    "has_close_trade": False,
+                    "has_sell": False,
+                    "dividends_local": 0.0,
+                },
+            )
+
+    rows: list[dict[str, object]] = []
+    for (symbol, orig_curr), rec in records.items():
+        if not positions.empty:
+            pos_match = positions[
+                (positions["symbol"] == symbol)
+                & (positions["currency"].astype(str).str.upper() == orig_curr)
+            ]
+        else:
+            pos_match = pd.DataFrame()
+
+        open_shares = float(pos_match["shares"].sum()) if not pos_match.empty else 0.0
+        open_cost_local = float(pos_match["cost_basis"].sum()) if not pos_match.empty else 0.0
+        market_value_local = float(pos_match["market_value"].sum()) if not pos_match.empty else 0.0
+        unrealized_local = float(pos_match["unrealized_pnl"].sum()) if not pos_match.empty else 0.0
+
+        bought_local = float(rec["bought_local"])
+        sold_local = float(rec["sold_local"])
+        has_close_trade = bool(rec["has_close_trade"])
+        has_sell = bool(rec["has_sell"])
+        dividends_local = float(rec["dividends_local"])
+
+        if has_close_trade:
+            realized_local = float(rec["close_trade_local"])
+        elif has_sell:
+            closed_cost = max(0.0, bought_local - open_cost_local)
+            realized_local = sold_local - closed_cost
+        else:
+            realized_local = 0.0
+
+        total_pnl_local = realized_local + unrealized_local
+        cost_ref = bought_local if bought_local > 0 else open_cost_local
+        return_pct = (total_pnl_local / cost_ref) if cost_ref > 0 else 0.0
+
+        if open_shares > 0 and (has_sell or has_close_trade):
+            status = "Częściowo zamknięta"
+        elif open_shares > 0:
+            status = "Otwarta"
+        else:
+            status = "Zamknięta"
+
+        invested_target = convert_value(cost_ref, orig_curr, target_curr, fx_row)
+        market_value_target = convert_value(market_value_local, orig_curr, target_curr, fx_row)
+        realized_target = convert_value(realized_local, orig_curr, target_curr, fx_row)
+        unrealized_target = convert_value(unrealized_local, orig_curr, target_curr, fx_row)
+        dividends_target = convert_value(dividends_local, orig_curr, target_curr, fx_row)
+        total_pnl_target = realized_target + unrealized_target
+
+        rows.append(
+            {
+                "symbol": symbol,
+                "status": status,
+                "currency": orig_curr,
+                "shares": open_shares,
+                "invested_local": cost_ref,
+                "market_value_local": market_value_local,
+                "realized_pnl_local": realized_local,
+                "unrealized_pnl_local": unrealized_local,
+                "dividends_local": dividends_local,
+                "total_pnl_local": total_pnl_local,
+                "invested": invested_target,
+                "market_value": market_value_target,
+                "realized_pnl": realized_target,
+                "unrealized_pnl": unrealized_target,
+                "dividends": dividends_target,
+                "total_pnl": total_pnl_target,
+                "return_pct": return_pct,
+                "report_currency": target_curr,
+            }
+        )
+
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("total_pnl", ascending=False).reset_index(drop=True)
+
+
+def format_company_pnl_table(company_pnl: pd.DataFrame, currency: str = "pln") -> pd.DataFrame:
+    """Format company P&L ranking table for HTML display."""
+    target_curr = currency.upper()
+    if company_pnl.empty:
+        return pd.DataFrame(
+            columns=[
+                "Pozycja",
+                "Symbol",
+                "Status",
+                "Zainwestowano",
+                f"Zrealizowany P&L ({target_curr})",
+                f"Niezrealizowany P&L ({target_curr})",
+                "Zysk / strata (waluta)",
+                f"Łączny zysk / strata ({target_curr})",
+                "Zwrot (%)",
+            ]
+        )
+
+    ordered = company_pnl.sort_values("total_pnl", ascending=False).reset_index(drop=True)
+    rows = []
+    for idx, row in ordered.iterrows():
+        orig_curr = str(row["currency"])
+        local_pnl = float(row["total_pnl_local"])
+        total_pnl = float(row["total_pnl"])
+        realized_pnl = float(row["realized_pnl"])
+        unrealized_pnl = float(row["unrealized_pnl"])
+        invested_local = float(row["invested_local"])
+        ret_pct = float(row["return_pct"])
+
+        local_sign = "+" if local_pnl >= 0 else ""
+        target_sign = "+" if total_pnl >= 0 else ""
+        real_sign = "+" if realized_pnl > 0 else ""
+        unreal_sign = "+" if unrealized_pnl > 0 else ""
+
+        rows.append(
+            {
+                "Pozycja": f"#{idx + 1}",
+                "Symbol": str(row["symbol"]),
+                "Status": str(row["status"]),
+                "Zainwestowano": f"{_fmt_num(invested_local)} {orig_curr}",
+                f"Zrealizowany P&L ({target_curr})": f"{real_sign}{_fmt_num(realized_pnl)} {target_curr}",
+                f"Niezrealizowany P&L ({target_curr})": f"{unreal_sign}{_fmt_num(unrealized_pnl)} {target_curr}",
+                "Zysk / strata (waluta)": f"{local_sign}{_fmt_num(local_pnl)} {orig_curr}",
+                f"Łączny zysk / strata ({target_curr})": f"{target_sign}{_fmt_num(total_pnl)} {target_curr}",
+                "Zwrot (%)": _fmt_pct(ret_pct),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
 def _fmt_pct(value: float | None) -> str:
     if value is None:
         return "—"

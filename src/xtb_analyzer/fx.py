@@ -35,7 +35,34 @@ def _yahoo_fx_series(pair: str, start: str, end: str | None = None) -> pd.Series
     return series.sort_index().ffill().rename(pair)
 
 
-def fetch_fx_rates(start: str, end: str | None = None, use_cache: bool = True) -> pd.DataFrame:
+def _apply_live_fx(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        return frame
+    from xtb_analyzer.prices import _fetch_live_prices
+
+    live = _fetch_live_prices(["USDPLN=X", "EURPLN=X", "EURUSD=X"])
+    if not live:
+        return frame
+    updated = frame.copy()
+    today = pd.Timestamp.today().normalize()
+    if today not in updated.index:
+        updated.loc[today] = updated.iloc[-1]
+    if "USDPLN=X" in live:
+        updated.loc[today, "USDPLN"] = live["USDPLN=X"]
+    if "EURPLN=X" in live:
+        updated.loc[today, "EURPLN"] = live["EURPLN=X"]
+    if "EURUSD=X" in live and live["EURUSD=X"] > 0:
+        updated.loc[today, "EURUSD"] = live["EURUSD=X"]
+        updated.loc[today, "USDEUR"] = 1.0 / live["EURUSD=X"]
+    return updated.sort_index().ffill()
+
+
+def fetch_fx_rates(
+    start: str,
+    end: str | None = None,
+    use_cache: bool = True,
+    refresh_latest: bool = False,
+) -> pd.DataFrame:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = CACHE_DIR / "fx_rates.parquet"
     end = end or (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
@@ -43,8 +70,11 @@ def fetch_fx_rates(start: str, end: str | None = None, use_cache: bool = True) -
     if use_cache and cache_file.exists():
         cached = pd.read_parquet(cache_file)
         cached.index = pd.to_datetime(cached.index)
-        needs_refresh = cached.index.max().date() < pd.Timestamp(end).date() - pd.Timedelta(days=2)
+        needs_refresh = cached.index.max().date() < pd.Timestamp(end).date() - pd.Timedelta(days=4)
         if cached.index.min() <= pd.Timestamp(start) and not needs_refresh:
+            if refresh_latest:
+                cached = _apply_live_fx(cached)
+                cached.to_parquet(cache_file)
             return cached.loc[start:end] if end else cached.loc[start:]
 
     try:
@@ -65,6 +95,8 @@ def fetch_fx_rates(start: str, end: str | None = None, use_cache: bool = True) -
     ).sort_index().ffill()
 
     frame["USDEUR"] = 1 / frame["EURUSD"]
+    if refresh_latest:
+        frame = _apply_live_fx(frame)
     frame.to_parquet(cache_file)
     return frame.loc[start:end] if end else frame.loc[start:]
 

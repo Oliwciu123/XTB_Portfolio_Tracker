@@ -2,9 +2,8 @@
 setlocal EnableExtensions
 cd /d "%~dp0"
 
-echo === Budowa przenosnej aplikacji XTB Portfolio Analyzer (Windows) ===
-echo Jednorazowy krok na komputerze z Pythonem 3.10+. Po zbudowaniu
-echo kopiujesz folder dist\XTBPortfolioAnalyzer na USB / do kolegi.
+echo === Budowa aplikacji XTB Portfolio Analyzer (Windows) ===
+echo Tworzenie przenosnego folderu dist\XTBPortfolioAnalyzer ...
 echo.
 
 where py >nul 2>&1
@@ -42,7 +41,12 @@ if %errorlevel% NEQ 0 (
   exit /b 1
 )
 
-echo Buduje one-folder exe ...
+echo Zamykam ewentualnie uruchomiona aplikacje i czyszcze poprzedni build ...
+taskkill /F /IM XTBPortfolioAnalyzer.exe >nul 2>&1
+if exist "%~dp0build" rmdir /S /Q "%~dp0build"
+if exist "%~dp0dist\XTBPortfolioAnalyzer" rmdir /S /Q "%~dp0dist\XTBPortfolioAnalyzer"
+
+echo Buduje aplikacje dist\XTBPortfolioAnalyzer ...
 "%PY%" -m PyInstaller --noconfirm --clean packaging\xtb_portfolio_analyzer.spec
 if %errorlevel% NEQ 0 (
   echo PyInstaller zakonczyl sie bledem.
@@ -50,18 +54,11 @@ if %errorlevel% NEQ 0 (
   exit /b 1
 )
 
-copy /Y "%~dp0packaging\Uruchom.bat" "%~dp0dist\XTBPortfolioAnalyzer\Uruchom.bat" >nul
 copy /Y "%~dp0src\xtb_analyzer\assets\app.ico" "%~dp0dist\XTBPortfolioAnalyzer\app.ico" >nul 2>&1
 
 echo.
-echo Gotowe.
-echo Skopiuj CALY folder:
-echo   %~dp0dist\XTBPortfolioAnalyzer
-echo na USB albo do innego komputera, potem dwuklik:
-echo   XTBPortfolioAnalyzer.exe
-echo   albo Uruchom.bat
-echo Nie potrzeba Pythona na komputerze docelowym.
-echo Internet jest potrzebny do notowan (Yahoo) i kursow NBP.
+echo Gotowe! Aplikacja znajduje sie w:
+echo   %~dp0dist\XTBPortfolioAnalyzer\XTBPortfolioAnalyzer.exe
 echo.
 pause
 exit /b 0

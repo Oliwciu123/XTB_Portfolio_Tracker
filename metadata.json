@@ -1,0 +1,5 @@
+{
+  "name": "XTB Portfolio Analyzer",
+  "description": "Analyze XTB broker account exports and generate an interactive HTML portfolio report with ROI, MWR/XIRR, TWR, deposit-matched benchmarks, FX attribution, and risk metrics.",
+  "requestFramePermissions": []
+}

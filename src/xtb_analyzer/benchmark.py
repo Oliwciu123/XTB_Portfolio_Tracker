@@ -11,6 +11,8 @@ SP500_TR_TICKER = "^SP500TR"
 NASDAQ100_TICKER = "^NDX"
 # iShares MSCI ACWI ETF - liquid proxy for the MSCI All Country World Index.
 ACWI_TICKER = "ACWI"
+# Philadelphia Semiconductor Index (PHLX Semiconductor Sector).
+SOX_TICKER = "^SOX"
 # Backward-compatible alias (XNDX is unavailable on Yahoo Finance).
 NASDAQ100_TR_TICKER = NASDAQ100_TICKER
 
@@ -18,6 +20,7 @@ BENCHMARK_TICKERS: dict[str, str] = {
     "sp500": SP500_TR_TICKER,
     "nasdaq100": NASDAQ100_TICKER,
     "acwi": ACWI_TICKER,
+    "sox": SOX_TICKER,
 }
 
 

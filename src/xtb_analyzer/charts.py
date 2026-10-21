@@ -16,6 +16,7 @@ CHART_COLORS = {
     "benchmark": "#60a5fa",
     "benchmark_alt": "#c084fc",
     "benchmark_world": "#fbbf24",
+    "benchmark_sox": "#22d3ee",
     "gain": "#34d399",
     "loss": "#f87171",
     "grid": "rgba(148, 163, 184, 0.14)",
@@ -44,7 +45,27 @@ CHART_LAYOUT = dict(
     hoverlabel=dict(bgcolor="#1e293b", bordercolor="#334155", font_size=12),
 )
 
-PLOTLY_SHOW_CONFIG = {"displayModeBar": True, "responsive": True}
+PLOTLY_SHOW_CONFIG = {
+    "displayModeBar": True,
+    "displaylogo": False,
+    "responsive": True,
+    "modeBarButtons": [["toImage"]],
+    "modeBarButtonsToRemove": [
+        "zoom2d",
+        "pan2d",
+        "select2d",
+        "lasso2d",
+        "zoomIn2d",
+        "zoomOut2d",
+        "autoScale2d",
+        "resetScale2d",
+        "hoverClosestCartesian",
+        "hoverCompareCartesian",
+        "toggleSpikelines",
+        "hoverClosestPie",
+        "toggleHover",
+    ],
+}
 
 PIE_COLORS = [
     "#34d399",
@@ -159,6 +180,7 @@ BENCHMARK_META = {
     "sp500": ("S&P 500 TR", CHART_COLORS["benchmark"], "solid"),
     "nasdaq100": ("NASDAQ 100", CHART_COLORS["benchmark_alt"], "dot"),
     "acwi": ("MSCI ACWI", CHART_COLORS["benchmark_world"], "dash"),
+    "sox": ("Philadelphia Semiconductor (SOX)", CHART_COLORS["benchmark_sox"], "dashdot"),
 }
 
 RETURN_CHART_LAYOUT = {
@@ -296,8 +318,8 @@ def build_return_comparison_figure(
                 "Zwrot z kapitału – dane miesięczne<br>"
                 f"<sup style='color:#94a3b8'>{_comparison_subtitle(data, visible)}</sup>"
             ),
-            x=0,
-            xanchor="left",
+            x=0.5,
+            xanchor="center",
         ),
         yaxis_title="Stopa zwrotu",
         xaxis_title="",
@@ -425,7 +447,8 @@ def plot_nav_with_deposits(nav: pd.DataFrame, currency: str = "pln") -> go.Figur
                 f"Portfel: <b>{_polish_decimal(current_nav, 2)}</b> | "
                 f"Wpłaty: <b>{_polish_decimal(current_dep, 2)}</b></sup>"
             ),
-            x=0,
+            x=0.5,
+            xanchor="center",
         ),
         yaxis_title=f"Kwota ({_currency_label(currency)})",
         xaxis_title="",
@@ -518,7 +541,8 @@ def plot_return_dashboard(nav: pd.DataFrame, currency: str = "pln") -> go.Figure
                 f"Wartość: {_polish_decimal(current_nav, 2)} | "
                 f"Zysk/strata: {_polish_decimal(gain, 2)} {_currency_label(currency)}</sup>"
             ),
-            x=0,
+            x=0.5,
+            xanchor="center",
         ),
         showlegend=False,
         height=420,
@@ -658,7 +682,8 @@ def plot_return_measures(measures: ReturnMeasures) -> go.Figure:
                     f"Stopy zwrotu za cały okres – porównanie metod ({measures.currency})<br>"
                     f"<sup>Okres: {measures.period_days} dni | stan na {measures.as_of}</sup>"
                 ),
-                x=0,
+                x=0.5,
+                xanchor="center",
             ),
             "yaxis_title": "Stopa zwrotu (%)",
             "height": 430,
@@ -701,7 +726,8 @@ def plot_drawdown(daily_returns: pd.Series, currency: str = "pln") -> go.Figure:
                     f"Obsunięcia kapitału – TWR ({_currency_label(currency)})<br>"
                     f"<sup>Maksymalne obsunięcie: <b>{_polish_decimal(max_dd)}%</b></sup>"
                 ),
-                x=0,
+                x=0.5,
+                xanchor="center",
             ),
             "yaxis_title": "Obsunięcie (%)",
             "height": 420,
@@ -751,7 +777,7 @@ def plot_monthly_returns_heatmap(daily_returns: pd.Series, currency: str = "pln"
     fig.update_layout(
         {
             **CHART_LAYOUT,
-            "title": dict(text=f"Miesięczne stopy zwrotu TWR ({_currency_label(currency)})", x=0),
+            "title": dict(text=f"Miesięczne stopy zwrotu TWR ({_currency_label(currency)})", x=0.5, xanchor="center"),
             "height": 200 + 60 * len(pivot),
             "margin": dict(l=60, r=40, t=80, b=40),
         }
@@ -807,7 +833,8 @@ def plot_fx_attribution_series(attribution: FxAttribution) -> go.Figure:
                     f"Waluta: <b>{_polish_decimal(attribution.fx_gain_pln)}</b> | "
                     f"Łącznie: <b>{_polish_decimal(attribution.total_gain_pln)}</b> PLN</sup>"
                 ),
-                x=0,
+                x=0.5,
+                xanchor="center",
             ),
             "yaxis_title": "Zysk / strata (PLN)",
             "height": 480,
@@ -841,7 +868,7 @@ def plot_fx_attribution_waterfall(attribution: FxAttribution) -> go.Figure:
     fig.update_layout(
         {
             **CHART_LAYOUT,
-            "title": dict(text="Dekompozycja wyniku: inwestycje + waluta = całość (PLN)", x=0),
+            "title": dict(text="Dekompozycja wyniku: inwestycje + waluta = całość (PLN)", x=0.5, xanchor="center"),
             "yaxis_title": "PLN",
             "height": 440,
             "showlegend": False,
@@ -897,7 +924,7 @@ def plot_allocation_donut(
     fig.update_layout(
         {
             **CHART_LAYOUT,
-            "title": dict(text=title, x=0, font=dict(size=16)),
+            "title": dict(text=title, x=0.5, xanchor="center", font=dict(size=16)),
             "height": 360,
             "showlegend": True,
             "legend": dict(
@@ -951,7 +978,8 @@ def plot_holdings_allocation(positions: pd.DataFrame, top_n: int = 10) -> go.Fig
             **CHART_LAYOUT,
             "title": dict(
                 text=f"Alokacja wg pozycji<br><sup style='color:#94a3b8'>Łącznie {_polish_decimal(total, 0)} PLN</sup>",
-                x=0,
+                x=0.5,
+                xanchor="center",
             ),
             "height": max(320, 56 + 36 * len(by_symbol)),
             "showlegend": False,
@@ -1009,7 +1037,8 @@ def plot_rolling_volatility(daily_returns: pd.Series, window: int = 21, currency
             **CHART_LAYOUT,
             "title": dict(
                 text=f"Zmienność krocząca ({window} dni, w ujęciu rocznym, {_currency_label(currency)})",
-                x=0,
+                x=0.5,
+                xanchor="center",
             ),
             "yaxis_title": "Zmienność roczna (%)",
             "height": 400,
@@ -1039,3 +1068,94 @@ def plot_sector_allocation(alloc: pd.DataFrame) -> go.Figure:
         "Alokacja wg sektora",
         color_offset=2,
     )
+
+
+def plot_company_pnl(company_pnl: pd.DataFrame, currency: str = "pln") -> go.Figure:
+    """Horizontal bar chart of total P&L per company from largest profit (top) to largest loss (bottom)."""
+    curr_label = _currency_label(currency)
+    if company_pnl.empty:
+        fig = go.Figure()
+        fig.update_layout(**CHART_LAYOUT, title=f"Zyski i straty na spółkach ({curr_label}) – brak danych")
+        return fig
+
+    # Sort ascending so the highest profit appears at the top of the horizontal bar chart
+    ordered = company_pnl.sort_values("total_pnl", ascending=True).reset_index(drop=True)
+    values = ordered["total_pnl"].astype(float).tolist()
+    symbols = ordered["symbol"].astype(str).tolist()
+    returns_pct = (ordered["return_pct"].astype(float) * 100).tolist()
+    statuses = ordered["status"].astype(str).tolist()
+    local_pnls = ordered["total_pnl_local"].astype(float).tolist()
+    local_currs = ordered["currency"].astype(str).tolist()
+
+    colors = [CHART_COLORS["gain"] if v >= 0 else CHART_COLORS["loss"] for v in values]
+    labels = [
+        f"{'+' if v >= 0 else ''}{_polish_decimal(v, 2)} {curr_label} ({r:+.1f}%)".replace(".", ",")
+        for v, r in zip(values, returns_pct)
+    ]
+    customdata = [
+        [
+            status,
+            f"{'+' if lp >= 0 else ''}{_polish_decimal(lp, 2)} {lc}",
+            f"{r:+.2f}%".replace(".", ","),
+        ]
+        for status, lp, lc, r in zip(statuses, local_pnls, local_currs, returns_pct)
+    ]
+
+    min_val = min(values + [0.0])
+    max_val = max(values + [0.0])
+    span = max(max_val - min_val, 1.0)
+    left_pad = min_val - span * 0.36 if min_val < 0 else -span * 0.05
+    right_pad = max_val + span * 0.38 if max_val > 0 else span * 0.05
+
+    total_profit = sum(v for v in values if v > 0)
+    total_loss = sum(v for v in values if v < 0)
+    net_total = sum(values)
+
+    fig = go.Figure(
+        go.Bar(
+            x=values,
+            y=symbols,
+            orientation="h",
+            marker=dict(color=colors, line=dict(width=0), cornerradius=5),
+            text=labels,
+            textposition="outside",
+            cliponaxis=False,
+            textfont=dict(size=12, color=CHART_COLORS["text"]),
+            customdata=customdata,
+            hovertemplate=(
+                "<b>%{y}</b> (%{customdata[0]})<br>"
+                f"Wynik ({curr_label}): <b>%{{x:+,.2f}} {curr_label}</b><br>"
+                "Wynik w walucie: <b>%{customdata[1]}</b><br>"
+                "Stopa zwrotu: <b>%{customdata[2]}</b><extra></extra>"
+            ),
+        )
+    )
+    fig.update_layout(
+        {
+            **CHART_LAYOUT,
+            "title": dict(
+                text=(
+                    f"Zyski i straty na spółkach – od największego zysku do największej straty ({curr_label})<br>"
+                    f"<sup style='color:#94a3b8'>Zyski: <b style='color:#34d399'>+{_polish_decimal(total_profit, 2)} {curr_label}</b> | "
+                    f"Straty: <b style='color:#f87171'>{_polish_decimal(total_loss, 2)} {curr_label}</b> | "
+                    f"Bilans spółek: <b>{'+' if net_total >= 0 else ''}{_polish_decimal(net_total, 2)} {curr_label}</b></sup>"
+                ),
+                x=0.5,
+                xanchor="center",
+            ),
+            "height": max(380, 90 + 38 * len(ordered)),
+            "showlegend": False,
+            "margin": dict(l=95, r=155, t=88, b=48),
+            "xaxis": dict(
+                title=f"Łączny zysk / strata ({curr_label}) – zrealizowany + niezrealizowany",
+                range=[left_pad, right_pad],
+                gridcolor=CHART_COLORS["grid"],
+                zeroline=True,
+                zerolinecolor="rgba(148, 163, 184, 0.55)",
+                zerolinewidth=1.5,
+            ),
+            "yaxis": dict(title="", automargin=True, tickfont=dict(size=13)),
+        }
+    )
+    return fig
+

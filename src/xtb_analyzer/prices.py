@@ -101,22 +101,43 @@ def _merge_price_series(cached: pd.Series | None, fresh: pd.Series, start: str) 
     return merged.loc[pd.Timestamp(start) :]
 
 
-def _needs_refresh(cached: pd.Series | None, refresh_latest: bool) -> bool:
+def _needs_refresh(cached: pd.Series | None, refresh_latest: bool, cache_file: Path | None = None) -> bool:
     if cached is None or cached.empty:
         return True
-    return refresh_latest
+    if not refresh_latest:
+        return False
+    # Avoid re-downloading multi-day history on every live tick if cache was updated recently
+    if cache_file is not None and cache_file.exists():
+        import time
+
+        age_seconds = time.time() - cache_file.stat().st_mtime
+        if age_seconds < 300:
+            return False
+    return True
+
+
+def _fetch_single_live_price(ticker: str) -> tuple[str, float | None]:
+    try:
+        t = yf.Ticker(ticker)
+        fast = t.fast_info
+        price = getattr(fast, "last_price", None) or getattr(fast, "regular_market_price", None)
+        if price and float(price) > 0:
+            return ticker, float(price)
+    except Exception:
+        pass
+    return ticker, None
 
 
 def _fetch_live_prices(tickers: list[str]) -> dict[str, float]:
+    from concurrent.futures import ThreadPoolExecutor
+
+    if not tickers:
+        return {}
     live: dict[str, float] = {}
-    for ticker in tickers:
-        try:
-            fast = yf.Ticker(ticker).fast_info
-            price = getattr(fast, "last_price", None) or getattr(fast, "regular_market_price", None)
-            if price and float(price) > 0:
-                live[ticker] = float(price)
-        except Exception:
-            continue
+    with ThreadPoolExecutor(max_workers=min(8, len(tickers))) as pool:
+        for ticker, price in pool.map(_fetch_single_live_price, tickers):
+            if price is not None and price > 0:
+                live[ticker] = price
     return live
 
 
@@ -146,7 +167,7 @@ def _resolve_tickers(
     for ticker in tickers:
         cache_file = _cache_path(ticker)
         cached = _load_cached_series(cache_file) if use_cache else None
-        if _needs_refresh(cached, refresh_latest):
+        if _needs_refresh(cached, refresh_latest, cache_file if use_cache else None):
             fetch_start = start
             if cached is not None and not cached.empty:
                 fetch_start = (cached.index.max() - pd.Timedelta(days=7)).date().isoformat()

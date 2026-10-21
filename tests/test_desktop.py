@@ -93,7 +93,10 @@ def test_window_has_progress_and_no_offline_switch(tmp_path: Path, monkeypatch):
     assert "przyszłości" not in blob
     assert "bieżących notowań" not in blob
     assert "USD/EUR" not in blob
-    assert "ZIP z historią kont" in blob
+    assert "XTB PORTFOLIO ANALYZER" not in blob
+    assert "Analizator portfela XTB" in blob
+    assert "Wczytaj historię konta w formacie .zip, aby wygenerować raport." in blob
+    assert "Upuść archiwum ZIP tutaj" in blob
     assert app.progress is not None
     monkeypatch.setattr(app, "_start", lambda path: None)
     app._choose(str(tmp_path / "history.zip"))

@@ -54,7 +54,7 @@ def build_nav_series(
         use_cache=use_cache,
         refresh_latest=live_prices,
     )
-    fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache and not live_prices)
+    fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache, refresh_latest=live_prices)
 
     if prices.empty:
         raise ValueError("No historical prices available for portfolio symbols")

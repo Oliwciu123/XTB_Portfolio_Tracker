@@ -68,11 +68,9 @@ A real Windows window — not a website. Drop a ZIP with XTB account history; th
 
 2. **Copy the whole folder** `dist\XTBPortfolioAnalyzer` to a USB stick or zip it for a colleague. You do **not** need Python on the target PC.
 
-3. **Double-click** `XTBPortfolioAnalyzer.exe` (or `Uruchom.bat` in that folder).
+3. **Double-click** `XTBPortfolioAnalyzer.exe`.
 
-4. Drop the history ZIP onto the window (or **Wybierz archiwum ZIP**). A progress bar runs while prices, FX, and the report are calculated. Internet is required for Yahoo Finance and NBP.
-
-`xtb-analyzer.bat` at the repo root starts the portable `.exe` when `dist\XTBPortfolioAnalyzer\` (or a sibling `XTBPortfolioAnalyzer\`) exists. Otherwise it offers an optional developer venv path.
+4. Drop the history ZIP onto the window (or click **Wybierz archiwum ZIP**). A progress bar runs while prices, FX, and the report are calculated. You can switch the report currency (`PLN` / `USD` / `EUR`) directly inside the interactive report. Internet is required for Yahoo Finance and NBP.
 
 ### Developer run (source)
 
@@ -106,7 +104,7 @@ Unpacked uploads and price/FX caches are written under `data/` next to the `.exe
 
 ### Benchmarks
 
-- **Deposit-matched benchmarks** — S&P 500 Total Return (^SP500TR) and NASDAQ 100 (^NDX): every deposit buys the index on the deposit day, so timing and size of flows match your portfolio exactly
+- **Deposit-matched benchmarks** — S&P 500 Total Return (^SP500TR), NASDAQ 100 (^NDX), MSCI ACWI, and Philadelphia Semiconductor Index (^SOX), plus interactive comparison with any index, ETF, commodity, or company ticker
 
 ### FX attribution
 
@@ -114,20 +112,19 @@ Unpacked uploads and price/FX caches are written under `data/` next to the `.exe
 
 ### Risk (computed on TWR daily returns)
 
-- Annualized volatility, Sharpe, Sortino, Calmar, VaR 95%
-- Max drawdown with dates, drawdown chart, monthly returns heatmap, rolling volatility
-- Beta, alpha and correlation vs S&P 500 TR and NASDAQ 100
+- Annualized volatility, Sharpe, Sortino, Alpha, Beta, Calmar, VaR 95%
+- Max drawdown with dates, monthly returns heatmap, rolling volatility
 
 ### Portfolio structure & costs
 
-- Positions with average cost, market value and unrealized P&L (live Yahoo Finance prices)
+- Company profit & loss ranking (realized + unrealized P&L sorted from largest profit to largest loss)
 - Allocation by position, by account currency and by sector
 - Dividends, interest and withholding taxes per currency
 - FX conversion cost — XTB 0.5% commission on PLN → USD/EUR conversions
 
 ### Engine
 
-- Parses multi-section XTB CSV exports (semicolon, European decimals)
+- Parses multi-section XTB CSV/XLSX exports
 - Reconstructs daily portfolio NAV in PLN, USD, EUR through today
 - FX rates from NBP (table A) with Yahoo Finance fallback; on-disk price/FX caches
 
@@ -135,7 +132,7 @@ Unpacked uploads and price/FX caches are written under `data/` next to the `.exe
 
 ```
 src/xtb_analyzer/
-  parser.py         # XTB CSV parsing
+  parser.py         # XTB CSV/XLSX parsing
   comment_parser.py # trade/transfer comment parsing
   models.py         # dataclasses
   positions.py      # position tracking (average cost)
@@ -146,19 +143,18 @@ src/xtb_analyzer/
   prices.py         # price fetching + cache
   benchmark.py      # deposit-matched index benchmarks
   returns.py        # ROI, XIRR (MWR), TWR
-  risk.py           # risk statistics on TWR returns
+  risk.py           # risk statistics on TWR returns (Sharpe, Sortino, Alpha, Beta)
   attribution.py    # FX vs investment gain decomposition
-  metrics.py        # legacy metrics + tables + JSON report
+  metrics.py        # company P&L ranking + summary metrics
   sectors.py        # sector enrichment (Yahoo)
   charts.py         # Plotly figures (dark theme)
-  report.py         # HTML report generator
+  report.py         # Interactive 4-section HTML report generator
   session.py        # history zip → HTML report
   desktop.py        # desktop window (zip picker + report)
   paths.py          # portable / frozen app paths
   __main__.py       # CLI: python -m xtb_analyzer
 packaging/
   xtb_portfolio_analyzer.spec   # PyInstaller one-folder
-  Uruchom.bat                   # launcher copied into dist
 build_windows.bat               # one-time Windows build
 run_desktop.py                  # PyInstaller entry
 ```
