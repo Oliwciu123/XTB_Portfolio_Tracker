@@ -78,9 +78,10 @@ def _archive(files: dict[str, bytes]) -> bytes:
     buffer = io.BytesIO()
     with ZipFile(buffer, "w", ZIP_DEFLATED, compresslevel=9) as archive:
         for name, content in sorted(files.items()):
-            info = ZipInfo(name, date_time=(2021, 1, 1, 0, 0, 0))
+            info = ZipInfo(name, date_time=(1980, 1, 1, 0, 0, 0))
+            info.create_system = 0
             info.compress_type = ZIP_DEFLATED
-            info.external_attr = 0o644 << 16
+            info.external_attr = 0o600 << 16
             archive.writestr(info, content, compresslevel=9)
     return buffer.getvalue()
 

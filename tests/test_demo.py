@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import json
 import socket
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import numpy as np
 import pandas as pd
@@ -63,6 +65,21 @@ def test_demo_is_volatile_and_has_realized_gains_and_losses(demo):
 
 
 def test_demo_files_are_byte_reproducible(tmp_path):
+    def contents(payload: bytes, name: str):
+        if Path(name).suffix not in {".xlsx", ".zip"}:
+            return payload
+        with ZipFile(io.BytesIO(payload)) as archive:
+            members = archive.namelist()
+            assert members == sorted(set(members))
+            for info in archive.infolist():
+                assert info.date_time == (1980, 1, 1, 0, 0, 0)
+                assert info.create_system == 0
+                assert info.external_attr == 0o600 << 16
+                assert info.compress_type == ZIP_DEFLATED
+            # XLSX is itself a ZIP. Compare member bytes, including workbooks
+            # nested in the history ZIP, rather than platform-specific containers.
+            return {member: contents(archive.read(member), member) for member in members}
+
     spec = importlib.util.spec_from_file_location(
         "demo_generator", EXAMPLES.parent / "scripts/generate_demo_data.py"
     )
@@ -79,8 +96,9 @@ def test_demo_files_are_byte_reproducible(tmp_path):
     files = sorted(p.name for p in first.iterdir())
     assert files == sorted(p.name for p in second.iterdir())
     for name in files:
-        assert (first / name).read_bytes() == (second / name).read_bytes()
-        assert (first / name).read_bytes() == (EXAMPLES / name).read_bytes()
+        expected = contents((first / name).read_bytes(), name)
+        assert expected == contents((second / name).read_bytes(), name)
+        assert expected == contents((EXAMPLES / name).read_bytes(), name)
 
 
 def test_sample_xirr_zeroes_actual_flow_npv(demo):
