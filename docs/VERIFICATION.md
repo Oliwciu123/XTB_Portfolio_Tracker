@@ -37,7 +37,7 @@ financial tests and Chromium rendering do not require a visible desktop.
 
 ## Real screenshots
 
-The report is rendered at a 1600x1000 viewport and device scale 2, after all nine
+The report is rendered at a 1600x1000 viewport and device scale 2, after all seven
 Plotly figures finish rendering. Screenshots exercise the one-week range and
 reset, verify fixed categorical charts, and reject JavaScript page errors.
 HTTP(S) requests are blocked. The overview shows KPIs and NAV above the fold;
@@ -50,6 +50,14 @@ with Windows Graphics Capture. Both native client areas are 1600x1000, without
 browser chrome. No desktop-region fallback is allowed. These images were visually
 reviewed and are actual native windows, not HTML stand-ins.
 The capture backend follows the [Windows Capture API](https://github.com/NiiightmareXD/windows-capture/tree/main/windows-capture-python).
+The current report includes NAV, benchmarks, monthly returns, company P&L and
+three allocation charts. FX attribution is shown as cards and a table. The TWR
+drawdown and FX time-series charts and their live-update entries were removed.
+
+For the Windows release, `build_windows.bat` builds the one-folder application.
+Native capture can target the packaged executable with `--native --desktop-exe`;
+both its normal startup and `--demo` must reach the rendered-state signal.
+The archive's SHA-256 and requirements are recorded in `RELEASE_NOTES_v1.0.0.md`.
 
 ## Privacy, history and platforms
 
@@ -59,6 +67,7 @@ intended final tree is compared to the rewritten tip. All referenced commits and
 expanded ZIP/XLSX contents are scanned for known original identifiers and common
 credential patterns; every commit patch is scanned as well.
 
-No push or visibility change is performed. Ubuntu/macOS and Python 3.10 are
-configured in CI; remote CI runs require the owner's push. This session validates
-the source desktop app, not a newly signed installer or every market-data service.
+This release update uses ordinary commits and a normal push on main; it does not
+rewrite history or create a release/tag. The platform matrix runs in GitHub
+Actions after the push. The Windows build remains unsigned; publication is a
+separate owner action.

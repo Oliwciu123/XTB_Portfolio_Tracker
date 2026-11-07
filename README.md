@@ -4,6 +4,8 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](LICENSE)
 
+[Download for Windows](https://github.com/Oliwciu123/xtb_portfolio_analyzer/releases/latest) — portable ZIP, no Python needed.
+
 ![Portfolio dashboard: KPIs and reconstructed NAV](docs/images/dashboard.png)
 
 **Turn an XTB account export into an interactive portfolio report.** A Python CLI
@@ -25,6 +27,21 @@ tickers and index names label simulated paths, not actual historical returns.
 - Interactive, self-contained HTML reports with PNG and comparison CSV export.
 - Desktop ZIP import, progress feedback and live refresh; custom Yahoo symbols.
 
+## No Python needed
+
+1. Download `XTBPortfolioAnalyzer-Windows.zip` from the Windows release link above.
+2. Extract everything, including `_internal`, into one folder.
+3. Open the extracted `XTBPortfolioAnalyzer` folder and run `XTBPortfolioAnalyzer.exe`.
+
+For the offline demo, open a terminal in that folder and run:
+
+```powershell
+.\XTBPortfolioAnalyzer.exe --demo
+```
+
+Requires Windows 10/11 (64-bit) and Microsoft Edge WebView2. The app is unsigned.
+An internet connection is needed for market data; the bundled demo runs offline.
+
 ## Quickstart
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run from
@@ -34,10 +51,11 @@ the repository root on Windows, macOS or Linux:
 git clone https://github.com/Oliwciu123/xtb_portfolio_analyzer.git
 cd xtb_portfolio_analyzer
 uv sync
-uv run xtb-analyzer --demo --open
+uv run xtb-analyzer --demo
 ```
 
-The report is written to `output/report.html`. The demo needs no XTB account,
+Open `output/report.html` in a browser after generation, or add `--open` to the command.
+The demo needs no XTB account,
 API key or market-data connection after dependencies are installed.
 
 Desktop demo (native webview, optional dependencies):
@@ -64,8 +82,8 @@ Actual application renders using the seeded demo. Browser images are captured at
 The captures use the current application panels and controls without adding,
 hiding, or restyling features for the screenshots.
 
-**Reconstructed NAV and funding-neutral drawdown.**
-![NAV and TWR drawdown](docs/images/nav-drawdown.png)
+**Reconstructed NAV and net contributions.**
+![Portfolio NAV and net contributions](docs/images/nav.png)
 
 **Deposit-matched comparison with four fictional index paths.**
 ![Returns and benchmarks](docs/images/returns-benchmarks.png)
@@ -79,8 +97,8 @@ hiding, or restyling features for the screenshots.
 **Monthly TWR returns.** These are percentages, not monetary monthly P&L.
 ![Monthly return heatmap](docs/images/monthly-pnl.png)
 
-**Investment and FX attribution in PLN.**
-![FX attribution](docs/images/fx.png)
+**Investment and FX gains, with the per-currency breakdown.**
+![FX attribution cards and table](docs/images/fx-attribution.png)
 
 <details>
 <summary>Native desktop windows and report sections</summary>
