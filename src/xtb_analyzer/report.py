@@ -34,8 +34,6 @@ from xtb_analyzer.charts import (
     build_return_comparison_figure,
     plot_company_pnl,
     plot_currency_allocation,
-    plot_drawdown,
-    plot_fx_attribution_series,
     plot_holdings_allocation,
     plot_monthly_returns_heatmap,
     plot_nav_with_deposits,
@@ -1295,8 +1293,6 @@ def report_figures(data: ReportData) -> dict[str, go.Figure]:
         "chart-holdings": plot_holdings_allocation(data.positions),
         "chart-currency": plot_currency_allocation(data.positions),
         "chart-sector": plot_sector_allocation(data.sector_alloc),
-        "chart-drawdown": plot_drawdown(data.twr_returns, data.currency),
-        "chart-fx": plot_fx_attribution_series(data.attribution),
     }
 
 
@@ -1945,7 +1941,6 @@ def render_html_report(data: ReportData) -> str:
         "</div>"
         "<div class='panel-block' id='nav-history'>"
         f"{_chart(plot_nav_with_deposits(data.nav, data.currency), plot_id='chart-nav')}"
-        f"{_chart(plot_drawdown(data.twr_returns, data.currency), plot_id='chart-drawdown')}"
         "</div>"
         "<div class='panel-block' id='risk-monthly'>"
         "<h2>Risk and monthly TWR returns</h2>"
@@ -2025,7 +2020,6 @@ def render_html_report(data: ReportData) -> str:
         "<h2>FX attribution: investment and currency</h2>"
         "<p class='section-desc'>PLN gains split between investment performance and currency exposure.</p>"
         f"<div id='live-attribution'>{_attribution_section(data.attribution)}</div>"
-        f"{_chart(plot_fx_attribution_series(data.attribution), plot_id='chart-fx')}"
         "</div>"
         "<div class='panel-block'>"
         "<h2>Dividends and interest</h2>"

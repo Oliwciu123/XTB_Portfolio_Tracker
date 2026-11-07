@@ -235,7 +235,10 @@ def test_full_report_and_live_charts_share_financial_snapshot(monkeypatch, fx, t
     assert data.benchmarks["sp500"].iloc[-1] == pytest.approx(4200)
     report = render_html_report(data)
     live = build_live_payload(data)
-    assert len(live["charts"]) == 9
+    assert len(live["charts"]) == 7
+    for removed in ("chart-drawdown", "chart-fx"):
+        assert removed not in live["charts"]
+        assert removed not in report
     assert all(f'id="{key}"' in report for key in live["charts"])
     assert '<script src="https://cdn.plot.ly' not in report
     assert "export-bench-csv" in report

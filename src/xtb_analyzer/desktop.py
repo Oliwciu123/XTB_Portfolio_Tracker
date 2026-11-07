@@ -580,7 +580,7 @@ def _capture_readiness(window, ready_file: Path | None, report: bool) -> None:
         import time
 
         expression = (
-            "document.querySelectorAll('.js-plotly-plot').length === 9 && "
+            "document.querySelectorAll('.js-plotly-plot').length === 7 && "
             "Array.from(document.querySelectorAll('.js-plotly-plot')).every(p => p._fullLayout)"
             if report
             else "document.getElementById('dropzone-heading') !== null"

@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 
 from xtb_analyzer.attribution import FxAttribution
 from xtb_analyzer.returns import ReturnMeasures
-from xtb_analyzer.risk import drawdown_from_returns, monthly_returns
+from xtb_analyzer.risk import monthly_returns
 
 CHART_COLORS = {
     "nav": "#34d399",
@@ -707,44 +707,6 @@ def plot_return_measures(measures: ReturnMeasures) -> go.Figure:
     return fig
 
 
-def plot_drawdown(daily_returns: pd.Series, currency: str = "pln") -> go.Figure:
-    drawdown = drawdown_from_returns(daily_returns) * 100
-    max_dd = float(drawdown.min()) if not drawdown.empty else 0.0
-
-    fig = go.Figure(
-        go.Scatter(
-            x=_to_datetime_list(drawdown.index),
-            y=drawdown.tolist(),
-            mode="lines",
-            fill="tozeroy",
-            line=dict(color=CHART_COLORS["loss"], width=2),
-            fillcolor="rgba(239, 68, 68, 0.18)",
-            name="Drawdown",
-            hovertemplate="%{x|%Y-%m-%d}<br><b>%{y:.2f}%</b><extra></extra>",
-        )
-    )
-    fig.update_layout(
-        {
-            **CHART_LAYOUT,
-            "title": dict(
-                text=(
-                    f"Portfolio drawdown: TWR ({_currency_label(currency)})<br>"
-                    f"<sup>Maximum drawdown: <b>{_format_decimal(max_dd)}%</b></sup>"
-                ),
-                x=0.5,
-                xanchor="center",
-            ),
-            "yaxis_title": "Drawdown (%)",
-            "height": 330,
-            "margin": dict(l=60, r=40, t=90, b=60),
-            "showlegend": False,
-        }
-    )
-    _apply_axis_style(fig)
-    fig.update_yaxes(ticksuffix="%")
-    return fig
-
-
 MONTH_LABELS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
 
@@ -797,64 +759,6 @@ def plot_monthly_returns_heatmap(daily_returns: pd.Series, currency: str = "pln"
         }
     )
     fig.update_yaxes(autorange="reversed")
-    return fig
-
-
-def plot_fx_attribution_series(attribution: FxAttribution) -> go.Figure:
-    series = attribution.series
-    x_dates = _to_datetime_list(series.index)
-
-    fig = go.Figure()
-    fig.add_trace(
-        go.Scatter(
-            x=x_dates,
-            y=series["investment_gain_pln"].tolist(),
-            name="Investment gain",
-            mode="lines",
-            stackgroup="gain",
-            line=dict(color=CHART_COLORS["nav"], width=1.5),
-            hovertemplate="%{x|%Y-%m-%d}<br>Investment: <b>%{y:,.0f} PLN</b><extra></extra>",
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=x_dates,
-            y=series["fx_gain_pln"].tolist(),
-            name="FX gain",
-            mode="lines",
-            stackgroup="gain",
-            line=dict(color=CHART_COLORS["benchmark"], width=1.5),
-            hovertemplate="%{x|%Y-%m-%d}<br>Currency: <b>%{y:,.0f} PLN</b><extra></extra>",
-        )
-    )
-    fig.add_trace(
-        go.Scatter(
-            x=x_dates,
-            y=series["total_gain_pln"].tolist(),
-            name="Total gain",
-            mode="lines",
-            line=dict(color=CHART_COLORS["text"], width=2, dash="dot"),
-            hovertemplate="%{x|%Y-%m-%d}<br>Total: <b>%{y:,.0f} PLN</b><extra></extra>",
-        )
-    )
-    fig.update_layout(
-        {
-            **CHART_LAYOUT,
-            "title": dict(
-                text=(
-                    "Investment and FX attribution (PLN)<br>"
-                    f"<sup>Investment: <b>{_format_decimal(attribution.investment_gain_pln)}</b> | "
-                    f"Currency: <b>{_format_decimal(attribution.fx_gain_pln)}</b> | "
-                    f"Total: <b>{_format_decimal(attribution.total_gain_pln)}</b> PLN</sup>"
-                ),
-                x=0.5,
-                xanchor="center",
-            ),
-            "yaxis_title": "Profit / loss (PLN)",
-            "height": 480,
-        }
-    )
-    _apply_axis_style(fig)
     return fig
 
 

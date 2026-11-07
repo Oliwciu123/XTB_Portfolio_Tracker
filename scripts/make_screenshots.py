@@ -43,7 +43,7 @@ def settled(page: Page) -> None:
     page.wait_for_function(
         """() => {
             const plots = [...document.querySelectorAll('.js-plotly-plot')];
-            return plots.length === 9 && plots.every(p => p._fullLayout && p.calcdata);
+            return plots.length === 7 && plots.every(p => p._fullLayout && p.calcdata);
         }"""
     )
     page.evaluate(
@@ -100,7 +100,7 @@ def capture_report(channel: str | None) -> None:
         page.screenshot(path=IMAGES / "dashboard.png", animations="disabled")
         page.screenshot(path=IMAGES / "report-overview.png", animations="disabled")
         for selector, name in (
-            ("#nav-history", "nav-drawdown.png"),
+            ("#nav-history", "nav.png"),
             ("#risk-monthly", "report-risk.png"),
         ):
             page.locator(selector).screenshot(path=IMAGES / name, animations="disabled")
@@ -133,14 +133,14 @@ def capture_report(channel: str | None) -> None:
             path=IMAGES / "report-holdings.png", animations="disabled"
         )
         section(page, "costs")
-        page.locator(".panel-block").filter(has=page.locator("#chart-fx")).screenshot(
-            path=IMAGES / "fx.png", animations="disabled"
+        page.locator(".panel-block").filter(has=page.locator("#live-attribution")).screenshot(
+            path=IMAGES / "fx-attribution.png", animations="disabled"
         )
         assert not errors, f"JavaScript errors: {errors}"
         browser.close()
 
 
-def capture_native(demo: bool) -> None:
+def capture_native(demo: bool, executable: Path | None = None) -> None:
     """Capture the actual pywebview client area by HWND, without browser/window chrome."""
     if sys.platform != "win32":
         raise RuntimeError("Native window capture currently requires Windows.")
@@ -149,10 +149,8 @@ def capture_native(demo: bool) -> None:
     name = "desktop-dashboard" if demo else "desktop-start"
     ready = ROOT / "output" / "demo" / (name + "-ready.json")
     ready.unlink(missing_ok=True)
-    command = [
-        sys.executable,
-        "-m",
-        "xtb_analyzer.desktop",
+    command = [str(executable)] if executable else [sys.executable, "-m", "xtb_analyzer.desktop"]
+    command += [
         "--width",
         "1616",
         "--height",
@@ -247,12 +245,19 @@ def main() -> None:
     parser.add_argument(
         "--native", action="store_true", help="Also capture actual Windows desktop windows."
     )
+    parser.add_argument(
+        "--desktop-exe", type=Path, help="Use a packaged executable for native captures."
+    )
     args = parser.parse_args()
+    if args.desktop_exe:
+        if not args.native:
+            parser.error("--desktop-exe requires --native")
+        args.desktop_exe = args.desktop_exe.resolve(strict=True)
     IMAGES.mkdir(parents=True, exist_ok=True)
     capture_report(args.channel)
     if args.native:
-        capture_native(demo=False)
-        capture_native(demo=True)
+        capture_native(demo=False, executable=args.desktop_exe)
+        capture_native(demo=True, executable=args.desktop_exe)
     for path in sorted(IMAGES.glob("*.png")):
         optimize(path)
         with Image.open(path) as image:
