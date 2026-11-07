@@ -91,5 +91,25 @@ HTML reports show their saved snapshot; the desktop bridge enables refresh and
 custom benchmark downloads. The offline demo uses fictional quotes, FX and indices
 and disables live fetching. Plotly.js is embedded, with no CDN requirement.
 
+## Synthetic scenario
+
+The distributable demo uses NumPy seed 42 and a pinned end date in `demo.json`.
+Its 15 assets have distinct GBM drift, volatility and market-factor loadings.
+Multiplicative drift shocks of 0.75 in 2022 and 0.88 in 2024 are applied across
+their date windows; random returns mean observed drawdowns differ from those
+shock magnitudes. No path is rescaled to a target ending price or positive return.
+FX follows mean-reverting log processes, with EUR/PLN derived consistently.
+
+Monthly funding alternates between the USD and EUR accounts. Withdrawals, partial
+and complete sales, dividends, withholding tax, internal FX transfers, fees and
+interest exercise the cash ledger. Transactions use simulated spot prices;
+the model does not reproduce actual corporate actions, holidays, ETF tracking or
+historical index total returns. Explicit instrument and benchmark currencies
+avoid network lookups in the demo, including the PLN-denominated WIG20 scenario.
+
+An independent cash/share ledger in `demo.json` reconciles terminal NAV. Tests
+also check byte-identical regeneration, a nonmonotonic NAV path, drawdowns and
+the XIRR/TWR equations. The simple parser fixtures are a separate test dataset.
+
 Provider references: [NBP API](https://api.nbp.pl/) and
 [Yahoo price adjustments](https://help.yahoo.com/kb/SLN28256.html).

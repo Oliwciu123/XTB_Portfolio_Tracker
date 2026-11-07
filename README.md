@@ -4,13 +4,17 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](LICENSE)
 
-![Portfolio dashboard with fictional data](docs/images/dashboard.png)
+![Portfolio dashboard: KPIs and reconstructed NAV](docs/images/dashboard.png)
 
 **Turn an XTB account export into an interactive portfolio report.** A Python CLI
 and desktop app for investors who want to understand performance across PLN, USD
 and EUR accounts. It reconstructs cash and positions, separates investment and
 currency effects, and compares results with deposit-matched benchmarks. Try the
 offline demo below: every account, transaction, quote and FX rate is fictional.
+
+The seeded demo spans **January 2021–November 2026**, with **15 instruments and
+284 cash operations**. It deliberately includes losses and drawdowns. The familiar
+tickers and index names label simulated paths, not actual historical returns.
 
 ## Features
 
@@ -55,16 +59,41 @@ See the [user guide](docs/USER_GUIDE.md) for desktop and portable Windows usage.
 
 ## Screenshots
 
-Real application renders using only the synthetic demo:
+Actual application renders using the seeded demo. Browser images are captured at
+1600×1000 with 2× pixel density; desktop images capture the real pywebview HWND.
 
-![Reconstructed NAV](docs/images/nav.png)
-![Deposit-matched returns](docs/images/returns.png)
+**Reconstructed NAV and funding-neutral drawdown.**
+![NAV and TWR drawdown](docs/images/nav-drawdown.png)
+
+**Deposit-matched comparison with four fictional index paths.**
+![Returns and benchmarks](docs/images/returns-benchmarks.png)
+
+**Position, currency and sector allocation, excluding cash.**
+![Portfolio allocation](docs/images/allocation.png)
+
+**Realized and unrealized position results.**
+![Holdings results table](docs/images/holdings-table.png)
+
+**Monthly TWR returns.** These are percentages, not monetary monthly P&L.
+![Monthly return heatmap](docs/images/monthly-pnl.png)
+
+**Investment and FX attribution in PLN.**
+![FX attribution](docs/images/fx.png)
 
 <details>
-<summary>Desktop import screen and complete HTML overview</summary>
+<summary>Native desktop windows and report sections</summary>
 
-![Desktop import screen rendered in Chromium](docs/images/desktop-start.png)
-![Full HTML overview](docs/images/report.png)
+The actual Windows import screen and the loaded offline report, without browser chrome:
+![Native desktop import window](docs/images/desktop-start.png)
+![Native desktop dashboard](docs/images/desktop-dashboard.png)
+
+The HTML report is captured in three sections, rather than one long page:
+![HTML overview](docs/images/report-overview.png)
+![HTML risk section](docs/images/report-risk.png)
+![HTML company results section](docs/images/report-holdings.png)
+
+Company price P&L (income is reported separately):
+![Company P&L](docs/images/company-pnl.png)
 
 </details>
 
@@ -129,10 +158,26 @@ uv run playwright install chromium
 uv run python scripts/make_screenshots.py
 ```
 
+On Windows, capture the actual desktop windows as well:
+
+```sh
+uv run --extra desktop python scripts/make_screenshots.py --native
+```
+
+Regenerate the demo through today, or pin its end date for byte reproducibility:
+
+```sh
+uv run python scripts/generate_demo_data.py --seed 42 --end-date 2026-11-07
+```
+
+Small parser fixtures are maintained separately by `scripts/generate_test_fixtures.py`.
+
 CI defines lint, formatting, tests and demo execution on Ubuntu, Windows and
 macOS with Python 3.10 and 3.13. A separate job renders screenshots. Dependencies
 are locked in `uv.lock`; use `uv sync --locked` to reproduce them.
 See the [verification record](docs/VERIFICATION.md) for checks actually run locally.
+The consolidated commit history and its actual feature dates are described in
+[HISTORY.md](docs/HISTORY.md).
 
 ## Limitations
 

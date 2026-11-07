@@ -26,6 +26,15 @@
 - **Charts:** retained linear lines without point markers, hidden Plotly toolbars,
   PNG buttons, expanded time ranges, and stable categorical plots. Headings live
   outside plot canvases to reduce label collisions.
+  Multi-year comparisons use automatic date ticks; forcing every month made the
+  six-year demo unreadable. Browser capture checks actual label bounds for overlap.
+- **Demo realism:** replaced the short smooth example with 2021–2026 correlated
+  GBM paths, regime shocks, 15 instruments and a varied cash ledger. Explicit quote
+  metadata now supports offline valuation of Dutch/French symbols. The fictional
+  WIG20 is converted from PLN rather than being implicitly treated as USD.
+- **Screenshots:** replaced the long low-resolution page with high-density report
+  sections and actual native HWND captures. Window capture uses Windows Graphics
+  Capture with no desktop-region fallback, protecting unrelated open applications.
 
 ## Analysis change with a concrete reason
 
