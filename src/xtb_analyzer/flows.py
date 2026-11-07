@@ -6,12 +6,11 @@ from decimal import Decimal
 import pandas as pd
 
 from xtb_analyzer.comment_parser import (
-    is_transfer_in,
+    TRANSFER_RE,
     parse_exchange_rate,
-    transfer_target_currency,
 )
 from xtb_analyzer.fx import convert_value, fetch_fx_rates
-from xtb_analyzer.models import Account, Transaction
+from xtb_analyzer.models import Account
 
 CONVERSION_FEE_RATE = Decimal("0.005")
 
@@ -24,6 +23,7 @@ class Deposit:
     amount_foreign: Decimal
     pln_spent: Decimal
     xtb_rate: Decimal
+    is_conversion: bool = True
 
 
 def first_deposit_date(accounts: list[Account]) -> pd.Timestamp | None:
@@ -33,14 +33,23 @@ def first_deposit_date(accounts: list[Account]) -> pd.Timestamp | None:
     return pd.Timestamp(deposits[0].timestamp.date())
 
 
-def extract_deposits(accounts: list[Account]) -> list[Deposit]:
+def extract_deposits(accounts: list[Account], fx: pd.DataFrame | None = None) -> list[Deposit]:
     deposits: list[Deposit] = []
+    currencies = {a.currency for a in accounts}
     for account in accounts:
         for tx in account.transactions:
-            if tx.type != "transfer_in" or not is_transfer_in(tx.comment):
+            if tx.type not in ("transfer_in", "transfer_out"):
                 continue
+            conversion = TRANSFER_RE.search(tx.comment)
+            if conversion:
+                source = conversion.group("source").upper()
+                target_currency = conversion.group("currency").upper()
+                if source in currencies and target_currency in currencies:
+                    continue  # Both legs belong to the portfolio, not external capital.
+                if account.currency != target_currency:
+                    continue  # Outgoing conversion to an absent account is ambiguous.
             rate = parse_exchange_rate(tx.comment)
-            target = transfer_target_currency(tx.comment) or account.currency
+            target = account.currency
             # "PLN to USD, Exchange rate:0.27" means foreign units per 1 PLN.
             # A deposit already denominated in PLN (future PLN account) is the PLN amount itself.
             if target == "PLN":
@@ -49,10 +58,21 @@ def extract_deposits(accounts: list[Account]) -> list[Deposit]:
                 pln_spent = tx.amount
                 used_rate = rate or Decimal("1")
             else:
-                if not rate or rate <= 0:
-                    continue
-                pln_spent = tx.amount / rate
-                used_rate = rate
+                if conversion and conversion.group("source").upper() == "PLN" and rate and rate > 0:
+                    pln_spent = tx.amount / rate
+                    used_rate = rate
+                else:
+                    if fx is None:
+                        dates = [t.timestamp for a in accounts for t in a.transactions]
+                        fx = fetch_fx_rates(
+                            start=(pd.Timestamp(min(dates)) - pd.Timedelta(days=7))
+                            .date()
+                            .isoformat()
+                        )
+                    available = fx.loc[: pd.Timestamp(tx.timestamp.date())]
+                    row = available.iloc[-1] if not available.empty else pd.Series(dtype=float)
+                    pln_spent = Decimal(str(convert_value(float(tx.amount), target, "PLN", row)))
+                    used_rate = tx.amount / pln_spent if pln_spent else Decimal("1")
             deposits.append(
                 Deposit(
                     timestamp=pd.Timestamp(tx.timestamp),
@@ -61,6 +81,7 @@ def extract_deposits(accounts: list[Account]) -> list[Deposit]:
                     amount_foreign=tx.amount,
                     pln_spent=pln_spent,
                     xtb_rate=used_rate,
+                    is_conversion=bool(conversion),
                 )
             )
     return sorted(deposits, key=lambda item: item.timestamp)
@@ -73,6 +94,8 @@ def build_cumulative_deposits(
 ) -> pd.DataFrame:
     rows: list[dict] = []
     cumulative = {"PLN": 0.0, "USD": 0.0, "EUR": 0.0}
+    gross = dict.fromkeys(cumulative, 0.0)
+    withdrawn = dict.fromkeys(cumulative, 0.0)
     deposits_by_day: dict[pd.Timestamp, list[Deposit]] = {}
     for deposit in deposits:
         day = pd.Timestamp(deposit.timestamp.date())
@@ -81,6 +104,7 @@ def build_cumulative_deposits(
     for day in calendar:
         fx_row = fx.loc[:day].iloc[-1] if not fx.empty else pd.Series(dtype=float)
         for deposit in deposits_by_day.get(day, []):
+            previous = cumulative.copy()
             cumulative["PLN"] += float(deposit.pln_spent)
             cumulative["USD"] += convert_value(
                 float(deposit.amount_foreign),
@@ -94,47 +118,59 @@ def build_cumulative_deposits(
                 "EUR",
                 fx_row,
             )
+            for code in cumulative:
+                delta = cumulative[code] - previous[code]
+                gross[code] += max(delta, 0.0)
+                withdrawn[code] += max(-delta, 0.0)
         rows.append(
             {
                 "date": day,
                 "deposits_pln": cumulative["PLN"],
                 "deposits_usd": cumulative["USD"],
                 "deposits_eur": cumulative["EUR"],
+                **{f"gross_deposits_{c.lower()}": gross[c] for c in gross},
+                **{f"withdrawals_{c.lower()}": withdrawn[c] for c in withdrawn},
             }
         )
     return pd.DataFrame(rows).set_index("date")
 
 
-def attach_deposits_to_nav(nav: pd.DataFrame, accounts: list[Account], use_cache: bool = True) -> pd.DataFrame:
+def attach_deposits_to_nav(
+    nav: pd.DataFrame,
+    accounts: list[Account],
+    use_cache: bool = True,
+    fx: pd.DataFrame | None = None,
+) -> pd.DataFrame:
     if nav.empty:
         return nav
-    deposits = extract_deposits(accounts)
     end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
-    fx = fetch_fx_rates(
-        start=nav.index[0].date().isoformat(),
-        end=end,
-        use_cache=use_cache,
-    )
+    if fx is None:
+        fx = fetch_fx_rates(start=nav.index[0].date().isoformat(), end=end, use_cache=use_cache)
+    deposits = extract_deposits(accounts, fx=fx)
     cumulative = build_cumulative_deposits(deposits, nav.index, fx)
     enriched = nav.join(cumulative, how="left")
     for currency in ("pln", "usd", "eur"):
         dep_col = f"deposits_{currency}"
         nav_col = f"nav_{currency}"
         enriched[f"gain_{currency}"] = enriched[nav_col] - enriched[dep_col]
-        enriched[f"return_{currency}"] = (
-            enriched[nav_col] / enriched[dep_col].replace(0, pd.NA) - 1
-        )
+        enriched[f"return_{currency}"] = enriched[f"gain_{currency}"] / enriched[
+            f"gross_deposits_{currency}"
+        ].replace(0, float("nan"))
     return enriched
 
 
-def analyze_conversion_losses(accounts: list[Account], use_cache: bool = True) -> pd.DataFrame:
+def analyze_conversion_losses(
+    accounts: list[Account], use_cache: bool = True, fx: pd.DataFrame | None = None
+) -> pd.DataFrame:
     del use_cache  # FX rates not needed for commission-only calculation
-    deposits = extract_deposits(accounts)
+    deposits = extract_deposits(accounts, fx=fx)
     if not deposits:
         return pd.DataFrame()
 
     rows = []
     for deposit in deposits:
+        if not deposit.is_conversion or deposit.currency == "PLN" or deposit.amount_foreign <= 0:
+            continue
         pln_spent = float(deposit.pln_spent)
         commission_loss_pln = pln_spent * float(CONVERSION_FEE_RATE)
 

@@ -12,34 +12,55 @@ from xtb_analyzer.report import generate_report
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="xtb_analyzer",
-        description="Generuje interaktywny raport HTML z eksportów XTB (XLSX/CSV).",
+        description="Generate an interactive HTML portfolio report from XTB exports (XLSX/CSV).",
     )
     parser.add_argument(
         "--data-dir",
         default="data",
-        help="folder z XTB_USD_cs.xlsx / XTB_EURO_cs.xlsx (domyślnie: data)",
+        help="directory containing XTB cash-operation exports (default: data)",
     )
-    parser.add_argument("--output-dir", default="output", help="folder wynikowy (domyślnie: output)")
-    parser.add_argument("--currency", default="pln", choices=["pln", "usd", "eur"], help="waluta raportu")
-    parser.add_argument("--no-cache", action="store_true", help="pomiń cache cen i kursów")
-    parser.add_argument("--no-live", action="store_true", help="nie pobieraj bieżących notowań")
-    parser.add_argument("--open", action="store_true", help="otwórz raport w przeglądarce po wygenerowaniu")
-    parser.epilog = "Okno aplikacji (wgranie ZIP): python -m xtb_analyzer.desktop"
+    parser.add_argument(
+        "--output-dir", default="output", help="report output directory (default: output)"
+    )
+    parser.add_argument(
+        "--currency", default="pln", choices=["pln", "usd", "eur"], help="report currency"
+    )
+    parser.add_argument(
+        "--no-cache", action="store_true", help="skip reading and writing the price and FX cache"
+    )
+    parser.add_argument(
+        "--no-live",
+        action="store_true",
+        help="disable live quotes (historical data can still require a network connection)",
+    )
+    parser.add_argument(
+        "--open", action="store_true", help="open the generated report in a browser"
+    )
+    parser.add_argument(
+        "--demo",
+        action="store_true",
+        help="Generate an offline report using fictional exports and market data in examples/.",
+    )
+    parser.epilog = "Desktop app (ZIP import): python -m xtb_analyzer.desktop"
     args = parser.parse_args(argv)
 
     try:
+        from xtb_analyzer.market_data import MarketData
+
+        data_dir = "examples" if args.demo and args.data_dir == "data" else args.data_dir
         path = generate_report(
-            data_dir=args.data_dir,
+            data_dir=data_dir,
             output_dir=args.output_dir,
             currency=args.currency,
             use_cache=not args.no_cache,
             refresh_latest=not args.no_live,
+            market_data=MarketData.from_examples(data_dir) if args.demo else None,
         )
-    except FileNotFoundError as exc:
-        print(f"Błąd: {exc}", file=sys.stderr)
+    except (FileNotFoundError, ValueError) as exc:
+        print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    print(f"Raport zapisany: {path.resolve()}")
+    print(f"Report saved: {path.resolve()}")
     if args.open:
         webbrowser.open(path.resolve().as_uri())
     return 0

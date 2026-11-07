@@ -149,7 +149,7 @@ def _normalize_type(raw_type: str, comment: str = "") -> TransactionType:
     ):
         return "transfer_in"
     if "withdrawal" in raw or "cash transfer out" in raw or "transfer out" in raw:
-        return "other"
+        return "transfer_out"
     if "divident" in raw or "dividend" in raw:
         return "dividend"
     if "withholding tax" in raw or raw.endswith("wht"):
@@ -293,18 +293,18 @@ def _read_xlsx_rows(path: Path) -> list[list[object]]:
         import openpyxl
     except ImportError as exc:
         raise ImportError(
-            "Brak pakietu openpyxl w tym interpreterze Pythona.\n"
-            "W terminalu (ten sam Python co kernel notebooka) uruchom:\n"
+            "openpyxl is not installed in this Python environment.\n"
+            "Run this with the same Python interpreter as your notebook kernel:\n"
             "  python -m pip install openpyxl\n"
-            "Potem Restart Kernel i odpal komórki od nowa."
+            "Then restart the kernel and run the cells again."
         ) from exc
 
     size = path.stat().st_size if path.exists() else 0
     if size < 64:
         raise ValueError(
-            f"{path.name} ma tylko {size} bajtów — plik jest pusty albo jeszcze "
-            "niezsynchronizowany z OneDrive. W Eksploratorze: PPM → Zawsze zachowuj na tym urządzeniu, "
-            "poczekaj aż ikona chmury zniknie, potem spróbuj ponownie."
+            f"{path.name} contains only {size} bytes; it may be empty or "
+            "not downloaded from cloud storage. Download the complete file locally "
+            "and try again."
         )
 
     # Prefer non-read-only first: some XTB exports declare dimension="A1" while the
@@ -333,12 +333,11 @@ def _read_xlsx_rows(path: Path) -> list[list[object]]:
     err_text = str(last_error or "")
     if "zip" in err_text.lower() or "not a zip" in err_text.lower():
         hint = (
-            " Plik nie jest prawidłowym XLSX (częsty efekt OneDrive „tylko online” "
-            "albo uszkodzonego pobrania). Pobierz lokalnie / wyeksportuj ponownie z xStation."
+            " File is not a valid XLSX workbook (possibly a cloud-only placeholder "
+            "or incomplete download). Download it locally or export it again from xStation."
         )
     raise ValueError(
-        f"Nie można otworzyć {path.name} przez openpyxl "
-        f"({type(last_error).__name__}: {last_error}).{hint}"
+        f"Cannot open {path.name} using openpyxl ({type(last_error).__name__}: {last_error}).{hint}"
     ) from last_error
 
 
@@ -411,20 +410,22 @@ def _looks_like_positions_header(mapping: dict[str, int], row: list[object]) -> 
 
 def _positions_export_error(path: Path, rows: list[list[object]]) -> ValueError:
     preview = []
-    for i, row in enumerate(rows[:6]):
+    for _i, row in enumerate(rows[:6]):
         preview.append(" | ".join(_cell(row, j) for j in range(min(6, len(row)))))
     preview_text = "\n".join(f"  row {i}: {line}" for i, line in enumerate(preview)) or "  (empty)"
     return ValueError(
         f"{path.name} looks like an XTB Closed/Open Positions export, "
         "not Cash Operations.\n"
-        "This analyzer needs Cash Operations (wpłaty, zakupy, dywidendy, podatki).\n"
-        "In xStation: Historia → Cash Operations / Operacje gotówkowe → Export CSV.\n"
+        "This analyzer needs Cash Operations: deposits, purchases, dividends, and taxes.\n"
+        "In xStation, open History, select Cash Operations, and export CSV or XLSX.\n"
         "Put those files in data/ (optionally with USD/EUR in the filename).\n"
         f"First rows of the file were:\n{preview_text}"
     )
 
 
-def _find_transaction_header(rows: list[list[object]], start: int = 0) -> tuple[int, dict[str, int]]:
+def _find_transaction_header(
+    rows: list[list[object]], start: int = 0
+) -> tuple[int, dict[str, int]]:
     """Find the Cash Operations header row by required columns — ID need not be first."""
     required = {"type", "time", "amount"}
     for index in range(start, len(rows)):
@@ -435,7 +436,9 @@ def _find_transaction_header(rows: list[list[object]], start: int = 0) -> tuple[
         mapping = _row_column_map(rows[index])
         if _looks_like_positions_header(mapping, rows[index]):
             continue
-        if required <= mapping.keys() and ("id" in mapping or "symbol" in mapping or "comment" in mapping):
+        if required <= mapping.keys() and (
+            "id" in mapping or "symbol" in mapping or "comment" in mapping
+        ):
             if "id" not in mapping:
                 mapping["id"] = -1
             return index, mapping
@@ -469,7 +472,9 @@ def _currency_hint_from_path(path: Path) -> str | None:
     return None
 
 
-def _currency_from_comments(rows: list[list[object]], header_idx: int, columns: dict[str, int]) -> str | None:
+def _currency_from_comments(
+    rows: list[list[object]], header_idx: int, columns: dict[str, int]
+) -> str | None:
     """Infer account currency from conversion comments or ticker suffixes."""
     comment_col = columns.get("comment", -1)
     symbol_col = columns.get("symbol", -1)
@@ -665,6 +670,11 @@ def _parse_transactions(
         elif tx_type == "close_trade":
             realized_pnl = amount
 
+        if tx_type in ("buy", "sell") and (not shares or not symbol):
+            raise ValueError(
+                f"Cannot reconstruct transaction {tx_id}: missing symbol or share quantity in the comment."
+            )
+
         transactions.append(
             Transaction(
                 id=tx_id,
@@ -691,9 +701,7 @@ def load_csv(path: str | Path) -> Account:
         raise ValueError(f"No rows found in {path}")
 
     history_start = _find_history_marker(rows)
-    positions_start = _find_section_marker(
-        rows, CLOSED_POSITIONS_MARKER, OPEN_POSITIONS_MARKER
-    )
+    positions_start = _find_section_marker(rows, CLOSED_POSITIONS_MARKER, OPEN_POSITIONS_MARKER)
 
     # Prefer the Cash Operations section when a multi-section export has both.
     header_search_from = history_start if history_start is not None else 0
@@ -715,8 +723,7 @@ def load_csv(path: str | Path) -> Account:
 
     if not meta["account_id"]:
         preview_comments = [
-            _cell(row, columns.get("comment", -1))
-            for row in rows[header_idx + 1 : header_idx + 40]
+            _cell(row, columns.get("comment", -1)) for row in rows[header_idx + 1 : header_idx + 40]
         ]
         meta["account_id"] = _account_id_from_comments(preview_comments)
     if not meta["account_id"]:
@@ -758,17 +765,15 @@ def describe_export_discovery(data_dir: str | Path) -> str:
     data_dir = Path(data_dir)
     resolved = data_dir.resolve()
     lines = [
-        f"Szukano w: {resolved}",
-        f"Katalog istnieje: {data_dir.is_dir()}",
+        f"Searched in: {resolved}",
+        f"Directory exists: {data_dir.is_dir()}",
     ]
     try:
         import openpyxl  # noqa: F401
 
         openpyxl_status = "OK"
     except ImportError:
-        openpyxl_status = (
-            "BRAK — uruchom w tym samym Pythonie co kernel: python -m pip install openpyxl"
-        )
+        openpyxl_status = "MISSING — run uv sync, then select the project's Python kernel"
     lines.append(f"openpyxl: {openpyxl_status}")
 
     if data_dir.is_dir():
@@ -777,20 +782,20 @@ def describe_export_discovery(data_dir: str | Path) -> str:
             key=lambda p: p.name.lower(),
         )
         if entries:
-            lines.append("Zawartość katalogu:")
+            lines.append("Directory contents:")
             for path in entries[:40]:
                 if path.is_file():
-                    lines.append(f"  • {path.name} ({path.stat().st_size} bajtów)")
+                    lines.append(f"  • {path.name} ({path.stat().st_size} bytes)")
                 else:
                     lines.append(f"  • {path.name}/")
             if len(entries) > 40:
-                lines.append(f"  … i {len(entries) - 40} więcej")
+                lines.append(f"  ... and {len(entries) - 40} more")
         else:
-            lines.append("Katalog data/ jest pusty.")
+            lines.append("The data directory is empty.")
 
         xtb_files = sorted(data_dir.glob("XTB_*"), key=lambda p: p.name.lower())
         if xtb_files:
-            lines.append("Diagnostyka plików XTB_*:")
+            lines.append("XTB export diagnostics:")
             for path in xtb_files:
                 if not path.is_file():
                     continue
@@ -798,8 +803,7 @@ def describe_export_discovery(data_dir: str | Path) -> str:
                 lines.append(f"  • {path.name}: {'OK' if ok else reason}")
     else:
         lines.append(
-            "Upewnij się, że pliki leżą w katalogu projektu: "
-            f"{find_project_root() / 'data'}"
+            f"Check that exports are in the project directory: {find_project_root() / 'data'}"
         )
     nested = []
     if data_dir.is_dir():
@@ -808,19 +812,23 @@ def describe_export_discovery(data_dir: str | Path) -> str:
                 continue
             if path.suffix.lower() not in {".xlsx", ".xlsm", ".xls", ".csv"}:
                 continue
-            if any(part in {".git", "__pycache__", "cache", "output", ".venv"} for part in path.parts):
+            if any(
+                part in {".git", "__pycache__", "cache", "output", ".venv"} for part in path.parts
+            ):
                 continue
             nested.append(path)
             if len(nested) >= 40:
                 break
         if nested:
-            lines.append("Pliki w podkatalogach:")
+            lines.append("Exports in subdirectories:")
             for path in nested:
-                lines.append(f"  • {path.relative_to(data_dir).as_posix()} ({path.stat().st_size} bajtów)")
+                lines.append(
+                    f"  • {path.relative_to(data_dir).as_posix()} ({path.stat().st_size} bytes)"
+                )
     lines.append(
-        "Oczekiwane nazwy: XTB_USD_cs.xlsx, XTB_EURO_cs.xlsx "
-        "(xStation → Historia → Eksportuj jako XLSX), "
-        "albo archiwum wielowalutowe: <konto>/USD_<konto>_<od>_<do>.xlsx i EUR_….xlsx."
+        "Expected filenames: XTB_USD_cs.xlsx, XTB_EURO_cs.xlsx "
+        "(xStation: History > Export XLSX), "
+        "or a multi-account archive: <account>/USD_<account>_<from>_<to>.xlsx and EUR_*.xlsx."
     )
     return "\n".join(lines)
 
@@ -840,10 +848,10 @@ def _cash_operations_status(path: Path) -> tuple[bool, str]:
     """Return ``(ok, detail)`` — detail is empty on success, else the failure reason."""
     try:
         if _is_positions_only_file(path):
-            return False, "Closed/Open Positions (pominięty)"
+            return False, "Closed/Open Positions (skipped)"
         rows = _read_rows(path)
         if not rows:
-            return False, "plik bez wierszy"
+            return False, "file contains no rows"
         history_start = _find_history_marker(rows)
         start = history_start if history_start is not None else 0
         _find_transaction_header(rows, start=start)
@@ -866,9 +874,9 @@ def _is_positions_only_file(path: Path) -> bool:
         rows = _read_rows(path)
     except Exception:
         return False
-    has_positions = _find_section_marker(
-        rows, CLOSED_POSITIONS_MARKER, OPEN_POSITIONS_MARKER
-    ) is not None
+    has_positions = (
+        _find_section_marker(rows, CLOSED_POSITIONS_MARKER, OPEN_POSITIONS_MARKER) is not None
+    )
     has_cash = _find_history_marker(rows) is not None
     if has_positions and not has_cash:
         try:
@@ -1059,18 +1067,16 @@ def _select_export_files(candidates: dict[str, Path]) -> list[Path]:
         ok = [p for p in named_canonical if statuses[p][0]]
         failed = [(p, statuses[p][1]) for p in named_canonical if not statuses[p][0]]
         if failed:
-            details = [
-                f"  • {p.name} ({p.stat().st_size} B): {reason}" for p, reason in failed
-            ]
-            ok_names = ", ".join(p.name for p in ok) or "(żaden)"
+            details = [f"  • {p.name} ({p.stat().st_size} B): {reason}" for p, reason in failed]
+            ok_names = ", ".join(p.name for p in ok) or "(none)"
             raise ValueError(
-                "Nie wszystkie pliki XTB_*_cs.xlsx dały się odczytać.\n"
+                "Some canonical XTB exports could not be read.\n"
                 f"OK: {ok_names}\n"
-                "Błędy:\n"
+                "Errors:\n"
                 + "\n".join(details)
-                + "\n\nPotrzebne są oba konta (USD i EURO). "
-                "Napraw pliki z błędem (openpyxl / OneDrive → „Zawsze zachowuj na tym urządzeniu” "
-                "/ ponowny eksport z xStation) i uruchom ponownie."
+                + "\n\nBoth selected currency accounts are required. "
+                "Fix the unreadable exports (install openpyxl, download cloud-only files, "
+                "or export again from xStation) and retry."
             )
         return ok
 
@@ -1082,17 +1088,15 @@ def _select_export_files(candidates: dict[str, Path]) -> list[Path]:
         details = [
             f"  • {p.name} ({p.stat().st_size} B): {reason}" for p, reason in failed_prefixed
         ]
-        ok_names = ", ".join(p.name for p in chosen_prefixed if statuses[p][0]) or "(żaden)"
+        ok_names = ", ".join(p.name for p in chosen_prefixed if statuses[p][0]) or "(none)"
         raise ValueError(
-            "Nie wszystkie eksporty walutowe XTB dały się odczytać.\n"
+            "Some XTB currency exports could not be read.\n"
             f"OK: {ok_names}\n"
-            "Błędy:\n" + "\n".join(details)
+            "Errors:\n" + "\n".join(details)
         )
 
     pool = [
-        p
-        for p in candidates.values()
-        if not _is_currency_prefixed_export(p) or id(p) in chosen_ids
+        p for p in candidates.values() if not _is_currency_prefixed_export(p) or id(p) in chosen_ids
     ]
     return sorted(
         (p for p in pool if statuses[p][0]),

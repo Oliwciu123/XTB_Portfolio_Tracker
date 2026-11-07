@@ -18,16 +18,20 @@ def resource_root() -> Path:
 
 
 def app_writable_root() -> Path:
-    """Folder the user can copy: next to the ``.exe``, or the project root in source."""
+    """Per-user application storage when frozen, or the project root in source."""
     if is_frozen():
-        return Path(sys.executable).resolve().parent
+        from platformdirs import user_data_path
+
+        root = user_data_path("XTBPortfolioAnalyzer", appauthor=False)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
     from xtb_analyzer.parser import find_project_root
 
     return find_project_root()
 
 
 def ensure_app_cwd() -> Path:
-    """Make relative ``data/cache`` paths land next to the portable app."""
+    """Resolve relative cache/output paths inside writable application storage."""
     root = app_writable_root()
     try:
         import os

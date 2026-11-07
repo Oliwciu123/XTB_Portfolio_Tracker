@@ -7,10 +7,10 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from xtb_analyzer.benchmark import NASDAQ100_TR_TICKER, SP500_TR_TICKER
 from xtb_analyzer.cash import build_cash_ledger, cash_summary
 from xtb_analyzer.flows import analyze_conversion_losses, conversion_summary
 from xtb_analyzer.models import Account
-from xtb_analyzer.benchmark import NASDAQ100_TR_TICKER, SP500_TR_TICKER
 from xtb_analyzer.prices import fetch_benchmark
 
 
@@ -56,7 +56,9 @@ def _first_investment_date(nav: pd.DataFrame, currency: str) -> pd.Timestamp | N
     return nav.index[active][0]
 
 
-def _max_drawdown_on_capital(nav: pd.DataFrame, currency: str) -> tuple[float, pd.Timestamp | None, pd.Timestamp | None]:
+def _max_drawdown_on_capital(
+    nav: pd.DataFrame, currency: str
+) -> tuple[float, pd.Timestamp | None, pd.Timestamp | None]:
     roc = _return_on_capital(nav, currency).dropna()
     if roc.empty:
         return 0.0, None, None
@@ -85,7 +87,9 @@ def _sortino(returns: pd.Series, risk_free: float = 0.0) -> float:
     return float(np.sqrt(252) * excess.mean() / downside.std())
 
 
-def _beta_alpha(portfolio_returns: pd.Series, benchmark_returns: pd.Series) -> tuple[float | None, float | None]:
+def _beta_alpha(
+    portfolio_returns: pd.Series, benchmark_returns: pd.Series
+) -> tuple[float | None, float | None]:
     aligned = pd.concat([portfolio_returns, benchmark_returns], axis=1, join="inner").dropna()
     if len(aligned) < 5:
         return None, None
@@ -136,7 +140,11 @@ def portfolio_snapshot(nav: pd.DataFrame, currency: str = "pln") -> dict[str, ob
     as_of = nav.index[-1]
     current_nav = round(float(nav[nav_col].iloc[-1]), 2)
     total_deposits = round(float(nav[dep_col].iloc[-1]), 2)
-    gain = round(float(nav[gain_col].iloc[-1]), 2) if gain_col in nav.columns else round(current_nav - total_deposits, 2)
+    gain = (
+        round(float(nav[gain_col].iloc[-1]), 2)
+        if gain_col in nav.columns
+        else round(current_nav - total_deposits, 2)
+    )
     total_return = round(float(nav[return_col].iloc[-1]), 4) if return_col in nav.columns else 0.0
 
     return {
@@ -163,19 +171,23 @@ def compute_metrics(
     if dep_col not in nav.columns:
         raise ValueError("NAV must include deposit columns. Run attach_deposits_to_nav() first.")
 
-    roc = _return_on_capital(nav, currency).dropna()
-    returns = _daily_returns(roc)
-    mdd, mdd_start, mdd_end = _max_drawdown_on_capital(nav, currency)
+    from xtb_analyzer.returns import twr_daily_returns
+    from xtb_analyzer.risk import _max_drawdown
+    from xtb_analyzer.risk import _sortino as risk_sortino
+
+    returns = twr_daily_returns(nav, currency)
+    mdd, mdd_start, mdd_end = _max_drawdown(returns)
     ath = float(series.max())
     benchmark_return = None
     beta = alpha = None
     nasdaq100_beta = nasdaq100_alpha = None
     nasdaq100_benchmark_return = None
 
-    invested = float(nav[dep_col].iloc[-1])
+    net_contributions = float(nav[dep_col].iloc[-1])
+    invested = float(nav.get(f"gross_deposits_{currency}", nav[dep_col]).iloc[-1])
     current_nav = float(series.iloc[-1])
-    total_return = float(current_nav / invested - 1) if invested > 0 else 0.0
-    gain = current_nav - invested
+    gain = current_nav - net_contributions
+    total_return = gain / invested if invested > 0 else 0.0
 
     if not series.empty:
         start = _first_investment_date(nav, currency) or series.index[0]
@@ -191,7 +203,7 @@ def compute_metrics(
         total_return=total_return,
         volatility=float(returns.std() * np.sqrt(252)) if not returns.empty else 0.0,
         sharpe=_sharpe(returns),
-        sortino=_sortino(returns),
+        sortino=risk_sortino(returns),
         max_drawdown=mdd,
         max_drawdown_start=mdd_start.date().isoformat() if mdd_start is not None else None,
         max_drawdown_end=mdd_end.date().isoformat() if mdd_end is not None else None,
@@ -210,12 +222,16 @@ def compute_metrics(
 
 
 def drawdown_series(nav: pd.DataFrame, currency: str = "usd") -> pd.Series:
-    return _return_on_capital(nav, currency).dropna()
+    from xtb_analyzer.returns import twr_daily_returns
+    from xtb_analyzer.risk import drawdown_from_returns
+
+    return drawdown_from_returns(twr_daily_returns(nav, currency))
 
 
 def rolling_volatility(nav: pd.DataFrame, currency: str = "usd", window: int = 21) -> pd.Series:
-    roc = _return_on_capital(nav, currency)
-    return _daily_returns(roc).rolling(window).std() * np.sqrt(252)
+    from xtb_analyzer.returns import twr_daily_returns
+
+    return twr_daily_returns(nav, currency).rolling(window).std() * np.sqrt(252)
 
 
 def realized_pnl_summary(accounts: list[Account]) -> pd.DataFrame:
@@ -346,11 +362,11 @@ def company_pnl_summary(
         return_pct = (total_pnl_local / cost_ref) if cost_ref > 0 else 0.0
 
         if open_shares > 0 and (has_sell or has_close_trade):
-            status = "Częściowo zamknięta"
+            status = "Partially closed"
         elif open_shares > 0:
-            status = "Otwarta"
+            status = "Open"
         else:
-            status = "Zamknięta"
+            status = "Closed"
 
         invested_target = convert_value(cost_ref, orig_curr, target_curr, fx_row)
         market_value_target = convert_value(market_value_local, orig_curr, target_curr, fx_row)
@@ -393,15 +409,15 @@ def format_company_pnl_table(company_pnl: pd.DataFrame, currency: str = "pln") -
     if company_pnl.empty:
         return pd.DataFrame(
             columns=[
-                "Pozycja",
+                "Rank",
                 "Symbol",
                 "Status",
-                "Zainwestowano",
-                f"Zrealizowany P&L ({target_curr})",
-                f"Niezrealizowany P&L ({target_curr})",
-                "Zysk / strata (waluta)",
-                f"Łączny zysk / strata ({target_curr})",
-                "Zwrot (%)",
+                "Invested capital",
+                f"Realized P&L ({target_curr})",
+                f"Unrealized P&L ({target_curr})",
+                "P&L (account currency)",
+                f"Total profit / loss ({target_curr})",
+                "Return (%)",
             ]
         )
 
@@ -423,15 +439,15 @@ def format_company_pnl_table(company_pnl: pd.DataFrame, currency: str = "pln") -
 
         rows.append(
             {
-                "Pozycja": f"#{idx + 1}",
+                "Rank": f"#{idx + 1}",
                 "Symbol": str(row["symbol"]),
                 "Status": str(row["status"]),
-                "Zainwestowano": f"{_fmt_num(invested_local)} {orig_curr}",
-                f"Zrealizowany P&L ({target_curr})": f"{real_sign}{_fmt_num(realized_pnl)} {target_curr}",
-                f"Niezrealizowany P&L ({target_curr})": f"{unreal_sign}{_fmt_num(unrealized_pnl)} {target_curr}",
-                "Zysk / strata (waluta)": f"{local_sign}{_fmt_num(local_pnl)} {orig_curr}",
-                f"Łączny zysk / strata ({target_curr})": f"{target_sign}{_fmt_num(total_pnl)} {target_curr}",
-                "Zwrot (%)": _fmt_pct(ret_pct),
+                "Invested capital": f"{_fmt_num(invested_local)} {orig_curr}",
+                f"Realized P&L ({target_curr})": f"{real_sign}{_fmt_num(realized_pnl)} {target_curr}",
+                f"Unrealized P&L ({target_curr})": f"{unreal_sign}{_fmt_num(unrealized_pnl)} {target_curr}",
+                "P&L (account currency)": f"{local_sign}{_fmt_num(local_pnl)} {orig_curr}",
+                f"Total profit / loss ({target_curr})": f"{target_sign}{_fmt_num(total_pnl)} {target_curr}",
+                "Return (%)": _fmt_pct(ret_pct),
             }
         )
     return pd.DataFrame(rows)
@@ -440,46 +456,49 @@ def format_company_pnl_table(company_pnl: pd.DataFrame, currency: str = "pln") -
 def _fmt_pct(value: float | None) -> str:
     if value is None:
         return "—"
-    return f"{value:+.2%}".replace(".", ",")
+    return f"{value:+.2%}"
 
 
 def _fmt_num(value: float | None, decimals: int = 2) -> str:
     if value is None:
         return "—"
-    return f"{value:,.{decimals}f}".replace(",", " ").replace(".", ",")
+    return f"{value:,.{decimals}f}"
 
 
 def format_metrics_table(metrics: PerformanceMetrics, currency: str = "pln") -> pd.DataFrame:
     currency = currency.upper()
     rows = [
-        ("Aktualna wartość portfela", f"{_fmt_num(metrics.current_nav)} {currency}"),
-        ("Suma wpłat", f"{_fmt_num(metrics.total_deposits)} {currency}"),
-        ("Zysk / strata", f"{_fmt_num(metrics.gain)} {currency}"),
+        ("Current portfolio NAV", f"{_fmt_num(metrics.current_nav)} {currency}"),
+        ("Gross contributions", f"{_fmt_num(metrics.total_deposits)} {currency}"),
+        ("Profit / loss", f"{_fmt_num(metrics.gain)} {currency}"),
         (
-            "Zwrot na wpłaconym kapitale",
-            f"{_fmt_pct(metrics.total_return)}  (wartość ÷ wpłaty − 1)",
+            "Return on contributed capital",
+            f"{_fmt_pct(metrics.total_return)}  (profit / gross contributions)",
         ),
-        ("Zmienność (roczna)", _fmt_pct(metrics.volatility)),
-        ("Współczynnik Sharpe'a", _fmt_num(metrics.sharpe)),
-        ("Współczynnik Sortino", _fmt_num(metrics.sortino)),
-        ("Maks. obsunięcie (drawdown)", _fmt_pct(metrics.max_drawdown)),
-        ("Szczyt wartości portfela (ATH)", f"{_fmt_num(metrics.ath)} {currency}"),
-        ("Odległość od ATH", _fmt_pct(metrics.pct_from_ath)),
+        ("Annualized volatility", _fmt_pct(metrics.volatility)),
+        ("Sharpe ratio", _fmt_num(metrics.sharpe)),
+        ("Sortino ratio", _fmt_num(metrics.sortino)),
+        ("Maximum drawdown", _fmt_pct(metrics.max_drawdown)),
+        ("All-time-high NAV", f"{_fmt_num(metrics.ath)} {currency}"),
+        ("Distance from all-time high", _fmt_pct(metrics.pct_from_ath)),
         ("Beta vs S&P 500", _fmt_num(metrics.beta)),
-        ("Alfa vs S&P 500", _fmt_num(metrics.alpha)),
-        ("Zwrot benchmarku (S&P 500 TR)", _fmt_pct(metrics.benchmark_total_return)),
+        ("Alpha vs S&P 500", _fmt_num(metrics.alpha)),
+        ("Benchmark return (S&P 500 TR)", _fmt_pct(metrics.benchmark_total_return)),
         ("Beta vs NASDAQ 100", _fmt_num(metrics.nasdaq100_beta)),
-        ("Alfa vs NASDAQ 100", _fmt_num(metrics.nasdaq100_alpha)),
-        ("Zwrot benchmarku (NASDAQ 100 TR)", _fmt_pct(metrics.nasdaq100_benchmark_total_return)),
+        ("Alpha vs NASDAQ 100", _fmt_num(metrics.nasdaq100_alpha)),
+        (
+            "Benchmark return (NASDAQ 100 price index)",
+            _fmt_pct(metrics.nasdaq100_benchmark_total_return),
+        ),
     ]
     if metrics.max_drawdown_start and metrics.max_drawdown_end:
         rows.append(
             (
-                "Okres maks. drawdownu",
+                "Maximum drawdown period",
                 f"{metrics.max_drawdown_start} → {metrics.max_drawdown_end}",
             )
         )
-    return pd.DataFrame(rows, columns=["Metryka", "Wartość"])
+    return pd.DataFrame(rows, columns=["Metric", "Value"])
 
 
 def format_positions_table(positions: pd.DataFrame) -> pd.DataFrame:
@@ -503,44 +522,44 @@ def format_positions_table(positions: pd.DataFrame) -> pd.DataFrame:
             frame[col] = frame[col].round(2)
     frame = frame.rename(
         columns={
-            "account_id": "Konto",
+            "account_id": "Account",
             "symbol": "Symbol",
-            "currency": "Waluta",
-            "shares": "Liczba akcji",
-            "avg_cost": "Śr. cena zakupu",
-            "market_price": "Aktualna cena",
-            "cost_basis": "Koszt nabycia",
-            "market_value": "Wartość rynkowa",
-            "unrealized_pnl": "Niezrealizowany P&L",
-            "market_value_pln": "Wartość PLN",
-            "market_value_usd": "Wartość USD",
-            "market_value_eur": "Wartość EUR",
-            "weight": "Udział",
-            "sector": "Sektor",
-            "industry": "Branża",
+            "currency": "Currency",
+            "shares": "Shares",
+            "avg_cost": "Average purchase price",
+            "market_price": "Market price",
+            "cost_basis": "Cost basis",
+            "market_value": "Market value",
+            "unrealized_pnl": "Unrealized P&L",
+            "market_value_pln": "Value PLN",
+            "market_value_usd": "Value USD",
+            "market_value_eur": "Value EUR",
+            "weight": "Weight",
+            "sector": "Sector",
+            "industry": "Industry",
         }
     )
-    if "Udział" in frame.columns:
-        frame["Udział"] = (frame["Udział"] * 100).round(2)
+    if "Weight" in frame.columns:
+        frame["Weight"] = (frame["Weight"] * 100).round(2)
     return frame
 
 
 def format_realized_pnl_table(summary: pd.DataFrame) -> pd.DataFrame:
     if summary.empty:
-        return pd.DataFrame(columns=["Symbol", "Transakcje", "Zrealizowany P&L", "Średni P&L", "Win rate"])
+        return pd.DataFrame(columns=["Symbol", "Trades", "Realized P&L", "Average P&L", "Win rate"])
     frame = summary.copy()
     frame = frame.rename(
         columns={
             "symbol": "Symbol",
-            "trades": "Transakcje",
-            "total_realized_pnl": "Zrealizowany P&L",
-            "avg_realized_pnl": "Średni P&L",
+            "trades": "Trades",
+            "total_realized_pnl": "Realized P&L",
+            "avg_realized_pnl": "Average P&L",
             "win_rate": "Win rate",
         }
     )
     frame["Win rate"] = (frame["Win rate"] * 100).round(2)
-    frame["Zrealizowany P&L"] = frame["Zrealizowany P&L"].round(2)
-    frame["Średni P&L"] = frame["Średni P&L"].round(2)
+    frame["Realized P&L"] = frame["Realized P&L"].round(2)
+    frame["Average P&L"] = frame["Average P&L"].round(2)
     return frame
 
 

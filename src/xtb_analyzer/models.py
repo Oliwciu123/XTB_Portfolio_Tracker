@@ -9,6 +9,7 @@ TransactionType = Literal[
     "buy",
     "sell",
     "transfer_in",
+    "transfer_out",
     "dividend",
     "withholding_tax",
     "interest",

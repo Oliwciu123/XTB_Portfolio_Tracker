@@ -1,14 +1,36 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from decimal import Decimal
 
 import pandas as pd
 
+from xtb_analyzer.benchmark import instrument_currency
 from xtb_analyzer.fx import convert_value, fetch_fx_rates
 from xtb_analyzer.models import Account, Position, Transaction
 from xtb_analyzer.positions import apply_transaction
-from xtb_analyzer.prices import fetch_prices
+from xtb_analyzer.prices import fetch_prices, xtb_to_yahoo
+
+
+def _quote_to_account(
+    price: float,
+    symbol: str,
+    account_currency: str,
+    fx_row: pd.Series,
+    quote_currencies: dict[str, str] | None = None,
+) -> float:
+    known = {"US": "USD", "DE": "EUR", "PL": "PLN", "WA": "PLN"}
+    quote_currency = (
+        (quote_currencies or {}).get(symbol)
+        or known.get(symbol.rsplit(".", 1)[-1])
+        or instrument_currency(xtb_to_yahoo(symbol))
+    )
+    if quote_currency not in ("PLN", "USD", "EUR"):
+        raise ValueError(
+            f"Quote currency {quote_currency} for {symbol} is not supported for position valuation."
+        )
+    return convert_value(price, quote_currency, account_currency, fx_row)
 
 
 @dataclass
@@ -35,6 +57,9 @@ def build_nav_series(
     accounts: list[Account],
     use_cache: bool = True,
     live_prices: bool = True,
+    fx: pd.DataFrame | None = None,
+    prices: pd.DataFrame | None = None,
+    quote_currencies: dict[str, str] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     transactions = sorted(
         (tx for account in accounts for tx in account.transactions),
@@ -47,21 +72,24 @@ def build_nav_series(
     end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
 
     symbols = sorted({tx.symbol for tx in transactions if tx.symbol})
-    prices = fetch_prices(
-        symbols,
-        start=start,
-        end=end,
-        use_cache=use_cache,
-        refresh_latest=live_prices,
-    )
-    fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache, refresh_latest=live_prices)
+    if prices is None:
+        prices = fetch_prices(
+            symbols, start=start, end=end, use_cache=use_cache, refresh_latest=live_prices
+        )
+    if fx is None:
+        fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache, refresh_latest=live_prices)
 
-    if prices.empty:
+    if prices.empty and symbols:
         raise ValueError("No historical prices available for portfolio symbols")
 
-    calendar = prices.index.union(
-        pd.DatetimeIndex([pd.Timestamp(tx.timestamp.date()) for tx in transactions])
-    ).unique().sort_values()
+    valuation_days = prices.index if not prices.empty else fx.index
+    calendar = (
+        valuation_days.union(
+            pd.DatetimeIndex([pd.Timestamp(tx.timestamp.date()) for tx in transactions])
+        )
+        .unique()
+        .sort_values()
+    )
 
     tx_by_day: dict[pd.Timestamp, list[Transaction]] = {}
     for tx in transactions:
@@ -73,11 +101,18 @@ def build_nav_series(
     holdings_rows: list[dict] = []
 
     for day in calendar:
+        for (_account_id, symbol), pos in state.positions.items():
+            ratio = prices.attrs.get("splits", {}).get(symbol, {}).get(str(day.date()))
+            if ratio:
+                pos.shares *= Decimal(str(ratio))
+                pos.avg_cost /= Decimal(str(ratio))
         for tx in tx_by_day.get(day, []):
             _apply_tx(state, tx)
 
-        day_prices = prices.loc[:day].iloc[-1]
-        fx_row = fx.loc[:day].iloc[-1] if not fx.empty else pd.Series(dtype=float)
+        available = prices.loc[:day] if not prices.empty else prices
+        day_prices = available.iloc[-1] if not available.empty else pd.Series(dtype=float)
+        available_fx = fx.loc[:day]
+        fx_row = available_fx.iloc[-1] if not available_fx.empty else pd.Series(dtype=float)
 
         cash_total = {"PLN": 0.0, "USD": 0.0, "EUR": 0.0}
         holdings_total = {"PLN": 0.0, "USD": 0.0, "EUR": 0.0}
@@ -97,6 +132,11 @@ def build_nav_series(
                 continue
             currency = _account_currency(account_id, accounts)
             price = float(day_prices.get(symbol, 0) or 0)
+            if not math.isfinite(price) or price <= 0:
+                raise ValueError(
+                    f"Missing price for {symbol} on {day.date()}. A reliable portfolio valuation is unavailable."
+                )
+            price = _quote_to_account(price, symbol, currency, fx_row, quote_currencies)
             market_value = float(pos.shares) * price
             holdings_breakdown[symbol] = holdings_breakdown.get(symbol, 0.0) + market_value
             if currency in local_total:
@@ -118,7 +158,13 @@ def build_nav_series(
 
     nav = pd.DataFrame(nav_rows).set_index("date")
     holdings = pd.DataFrame(holdings_rows)
-    positions = _positions_frame(state, accounts, prices.iloc[-1], fx.iloc[-1] if not fx.empty else pd.Series())
+    positions = _positions_frame(
+        state,
+        accounts,
+        prices.iloc[-1] if not prices.empty else pd.Series(dtype=float),
+        fx.iloc[-1] if not fx.empty else pd.Series(),
+        quote_currencies,
+    )
     return nav, holdings, positions
 
 
@@ -127,6 +173,7 @@ def _positions_frame(
     accounts: list[Account],
     latest_prices: pd.Series,
     fx_row: pd.Series,
+    quote_currencies: dict[str, str] | None = None,
 ) -> pd.DataFrame:
     rows = []
     for (account_id, symbol), pos in state.positions.items():
@@ -134,6 +181,7 @@ def _positions_frame(
             continue
         currency = _account_currency(account_id, accounts)
         price = float(latest_prices.get(symbol, 0) or 0)
+        price = _quote_to_account(price, symbol, currency, fx_row, quote_currencies)
         market_value = float(pos.shares) * price
         cost_basis = float(pos.cost_basis)
         rows.append(

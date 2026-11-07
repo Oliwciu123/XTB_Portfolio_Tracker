@@ -12,12 +12,19 @@ CACHE_DIR = Path("data/cache/fx")
 def _nbp_series(currency: str, start: str, end: str | None = None) -> pd.Series:
     """Return PLN per 1 unit of foreign currency (NBP table A)."""
     code = currency.lower()
-    end_part = end or pd.Timestamp.today().date().isoformat()
-    url = f"https://api.nbp.pl/api/exchangerates/rates/a/{code}/{start}/{end_part}/?format=json"
-    response = requests.get(url, timeout=30)
-    response.raise_for_status()
-    payload = response.json()
-    rows = payload["rates"]
+    last = min(
+        pd.Timestamp(end or pd.Timestamp.today()).normalize(), pd.Timestamp.today().normalize()
+    )
+    cursor = pd.Timestamp(start) - pd.Timedelta(days=7)
+    rows = []
+    while cursor <= last:
+        chunk_end = min(cursor + pd.Timedelta(days=92), last)
+        url = f"https://api.nbp.pl/api/exchangerates/rates/a/{code}/{cursor.date()}/{chunk_end.date()}/?format=json"
+        response = requests.get(url, timeout=30)
+        if response.status_code != 404:
+            response.raise_for_status()
+            rows.extend(response.json()["rates"])
+        cursor = chunk_end + pd.Timedelta(days=1)
     index = pd.to_datetime([row["effectiveDate"] for row in rows])
     values = [row["mid"] for row in rows]
     return pd.Series(values, index=index, name=f"{currency.upper()}PLN")
@@ -51,9 +58,8 @@ def _apply_live_fx(frame: pd.DataFrame) -> pd.DataFrame:
         updated.loc[today, "USDPLN"] = live["USDPLN=X"]
     if "EURPLN=X" in live:
         updated.loc[today, "EURPLN"] = live["EURPLN=X"]
-    if "EURUSD=X" in live and live["EURUSD=X"] > 0:
-        updated.loc[today, "EURUSD"] = live["EURUSD=X"]
-        updated.loc[today, "USDEUR"] = 1.0 / live["EURUSD=X"]
+    updated["EURUSD"] = updated["EURPLN"] / updated["USDPLN"]
+    updated["USDEUR"] = 1.0 / updated["EURUSD"]
     return updated.sort_index().ffill()
 
 
@@ -64,41 +70,51 @@ def fetch_fx_rates(
     refresh_latest: bool = False,
 ) -> pd.DataFrame:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = CACHE_DIR / "fx_rates.parquet"
+    cache_file = CACHE_DIR / "fx_rates_v2.parquet"
     end = end or (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
 
     if use_cache and cache_file.exists():
         cached = pd.read_parquet(cache_file)
         cached.index = pd.to_datetime(cached.index)
-        needs_refresh = cached.index.max().date() < pd.Timestamp(end).date() - pd.Timedelta(days=4)
-        if cached.index.min() <= pd.Timestamp(start) and not needs_refresh:
+        needs_refresh = cached.empty or cached.index.max().date() < pd.Timestamp(
+            end
+        ).date() - pd.Timedelta(days=4)
+        if not cached.empty and cached.index.min() <= pd.Timestamp(start) and not needs_refresh:
             if refresh_latest:
                 cached = _apply_live_fx(cached)
                 cached.to_parquet(cache_file)
-            return cached.loc[start:end] if end else cached.loc[start:]
+            return cached.loc[(pd.Timestamp(start) - pd.Timedelta(days=7)) : end]
 
     try:
         usd_pln = _nbp_series("usd", start, end)
         eur_pln = _nbp_series("eur", start, end)
     except Exception:
-        usd_pln = _yahoo_fx_series("USDPLN=X", start, end).rename("USDPLN")
-        eur_pln = _yahoo_fx_series("EURPLN=X", start, end).rename("EURPLN")
+        prior = (pd.Timestamp(start) - pd.Timedelta(days=7)).date().isoformat()
+        usd_pln = _yahoo_fx_series("USDPLN=X", prior, end).rename("USDPLN")
+        eur_pln = _yahoo_fx_series("EURPLN=X", prior, end).rename("EURPLN")
 
-    eur_usd = _yahoo_fx_series("EURUSD=X", start, end)
+    eur_usd = eur_pln / usd_pln
 
-    frame = pd.DataFrame(
-        {
-            "USDPLN": usd_pln,
-            "EURPLN": eur_pln,
-            "EURUSD": eur_usd,
-        }
-    ).sort_index().ffill()
+    frame = (
+        pd.DataFrame(
+            {
+                "USDPLN": usd_pln,
+                "EURPLN": eur_pln,
+                "EURUSD": eur_usd,
+            }
+        )
+        .sort_index()
+        .ffill()
+    )
 
     frame["USDEUR"] = 1 / frame["EURUSD"]
+    if frame.empty or frame[["USDPLN", "EURPLN"]].dropna().empty:
+        raise ValueError("No FX rates available. Check connectivity to NBP and Yahoo Finance.")
     if refresh_latest:
         frame = _apply_live_fx(frame)
-    frame.to_parquet(cache_file)
-    return frame.loc[start:end] if end else frame.loc[start:]
+    if use_cache:
+        frame.to_parquet(cache_file)
+    return frame.loc[(pd.Timestamp(start) - pd.Timedelta(days=7)) : end]
 
 
 def convert_value(amount: float, from_currency: str, to_currency: str, fx_row: pd.Series) -> float:
@@ -114,10 +130,8 @@ def convert_value(amount: float, from_currency: str, to_currency: str, fx_row: p
         ("PLN", "EUR"): 1 / fx_row.get("EURPLN") if fx_row.get("EURPLN") else None,
     }
     direct = rates.get((from_currency, to_currency))
-    if direct:
+    if direct is not None and pd.notna(direct) and direct > 0:
         return amount * float(direct)
-
-    if from_currency == "PLN":
-        return amount
-    pln_value = convert_value(amount, from_currency, "PLN", fx_row)
-    return convert_value(pln_value, "PLN", to_currency, fx_row)
+    raise ValueError(
+        f"Missing valid exchange rate {from_currency}/{to_currency}; valuation stopped."
+    )

@@ -3,7 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from xtb_analyzer.comment_parser import is_transfer_in, parse_exchange_rate, transfer_target_currency
+import pandas as pd
+
+from xtb_analyzer.comment_parser import (
+    is_transfer_in,
+    parse_exchange_rate,
+    transfer_target_currency,
+)
 from xtb_analyzer.models import Account, Transaction
 
 
@@ -57,10 +63,8 @@ def cash_summary(ledger: CashLedger) -> dict[str, float]:
     }
 
 
-def income_by_currency(accounts: list[Account]):
+def income_by_currency(accounts: list[Account]) -> pd.DataFrame:
     """Dividends, interest and taxes summed per account currency."""
-    import pandas as pd
-
     totals: dict[str, dict[str, Decimal]] = {}
     for account in accounts:
         for tx in account.transactions:

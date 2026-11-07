@@ -81,3 +81,20 @@ def test_twr_starts_at_first_deposit():
     daily = twr_daily_returns(nav, "pln")
     assert len(daily) == 2
     assert daily.iloc[-1] == pytest.approx(0.05)
+
+
+def test_legacy_metrics_roi_preserves_profit_after_full_withdrawal(monkeypatch):
+    from xtb_analyzer.metrics import compute_metrics
+
+    monkeypatch.setattr("xtb_analyzer.metrics._benchmark_stats", lambda *a: (None, None, None))
+    nav = pd.DataFrame(
+        {
+            "nav_pln": [1000, 1100, 0],
+            "deposits_pln": [1000, 1000, -100],
+            "gross_deposits_pln": [1000, 1000, 1000],
+        },
+        index=pd.date_range("2024-01-01", periods=3),
+    )
+    result = compute_metrics(nav, "pln", refresh_latest=False)
+    assert result.total_return == pytest.approx(0.1)
+    assert result.gain == pytest.approx(100)

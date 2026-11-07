@@ -25,11 +25,9 @@ def extract_xtb_zip(source: str | Path, dest: str | Path) -> Path:
     dest = Path(dest)
     size = source.stat().st_size if source.exists() else 0
     if size > MAX_ZIP_BYTES:
-        raise ZipImportError(
-            f"Archiwum ma {size} bajtów — limit to {MAX_ZIP_BYTES} bajtów."
-        )
+        raise ZipImportError(f"Archive contains {size} bytes; limit is {MAX_ZIP_BYTES} bytes.")
     if size < 22:
-        raise ZipImportError("Plik jest za mały, żeby był archiwum ZIP.")
+        raise ZipImportError("File is too small to be a ZIP archive.")
 
     dest.mkdir(parents=True, exist_ok=True)
     dest_resolved = dest.resolve()
@@ -37,7 +35,7 @@ def extract_xtb_zip(source: str | Path, dest: str | Path) -> Path:
     try:
         archive = zipfile.ZipFile(source)
     except zipfile.BadZipFile as exc:
-        raise ZipImportError("To nie jest prawidłowe archiwum ZIP.") from exc
+        raise ZipImportError("This is not a valid ZIP archive.") from exc
 
     extracted = 0
     total_uncompressed = 0
@@ -45,7 +43,7 @@ def extract_xtb_zip(source: str | Path, dest: str | Path) -> Path:
         members = [info for info in archive.infolist() if not info.is_dir()]
         if len(members) > MAX_ZIP_MEMBERS:
             raise ZipImportError(
-                f"Archiwum ma zbyt wiele plików ({len(members)}; limit {MAX_ZIP_MEMBERS})."
+                f"Archive contains too many files ({len(members)}; limit {MAX_ZIP_MEMBERS})."
             )
         for info in members:
             name = info.filename.replace("\\", "/")
@@ -57,7 +55,7 @@ def extract_xtb_zip(source: str | Path, dest: str | Path) -> Path:
                 continue
             total_uncompressed += info.file_size
             if total_uncompressed > MAX_UNCOMPRESSED_BYTES:
-                raise ZipImportError("Archiwum po rozpakowaniu przekracza dozwolony rozmiar.")
+                raise ZipImportError("Uncompressed archive exceeds the size limit.")
             target = _safe_member_path(dest_resolved, name)
             target.parent.mkdir(parents=True, exist_ok=True)
             with archive.open(info, "r") as src, target.open("wb") as out:
@@ -69,15 +67,15 @@ def extract_xtb_zip(source: str | Path, dest: str | Path) -> Path:
             extracted += 1
 
     if extracted == 0:
-        raise ZipImportError("Archiwum ZIP nie zawiera żadnych plików.")
+        raise ZipImportError("ZIP archive contains no files.")
     return dest_resolved
 
 
 def _safe_member_path(dest: Path, name: str) -> Path:
     parts = [part for part in name.split("/") if part not in ("", ".")]
     if not parts or any(part == ".." for part in parts):
-        raise ZipImportError(f"Niedozwolona ścieżka w archiwum: {name}")
+        raise ZipImportError(f"Unsafe archive path: {name}")
     target = dest.joinpath(*parts).resolve()
     if target != dest and dest not in target.parents:
-        raise ZipImportError(f"Niedozwolona ścieżka w archiwum: {name}")
+        raise ZipImportError(f"Unsafe archive path: {name}")
     return target

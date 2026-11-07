@@ -8,9 +8,7 @@ from decimal import Decimal
 # "OPEN BUY APP.US 2 @ 10.50" / "CLOSE BUY UBER.US 1.5/3 @ 70.00".
 # Older comments omit it: "OPEN BUY 1/1.5 @ 251.27".
 _TICKER = r"(?P<ticker>[A-Za-z][A-Za-z0-9.]*)"
-_SIZE_AT_PRICE = (
-    r"(?:(?P<fill>[\d.]+)/(?P<total>[\d.]+)|(?P<qty>[\d.]+))\s+@\s+(?P<price>[\d.]+)"
-)
+_SIZE_AT_PRICE = r"(?:(?P<fill>[\d.]+)/(?P<total>[\d.]+)|(?P<qty>[\d.]+))\s+@\s+(?P<price>[\d.]+)"
 OPEN_BUY_RE = re.compile(
     rf"OPEN BUY\s+(?:{_TICKER}\s+)?{_SIZE_AT_PRICE}",
     re.IGNORECASE,

@@ -1,0 +1,16 @@
+symbol,currency,sector,initial_price,drift,volatility,beta
+MSFT.US,USD,Technology,220,0.13,0.25,1.05
+AAPL.US,USD,Technology,130,0.1,0.29,1.1
+NVDA.US,USD,Technology,13,0.22,0.48,1.35
+AMZN.US,USD,Consumer discretionary,160,0.12,0.34,1.18
+JPM.US,USD,Financials,125,0.08,0.27,0.92
+KO.US,USD,Consumer staples,50,0.055,0.17,0.62
+SAP.DE,EUR,Technology,105,0.11,0.28,1.02
+SIE.DE,EUR,Industrials,125,0.075,0.26,0.98
+ASML.NL,EUR,Technology,500,0.15,0.38,1.25
+MC.FR,EUR,Consumer discretionary,500,0.07,0.3,1.08
+AIR.FR,EUR,Industrials,90,0.085,0.32,1.12
+SXR8.DE,EUR,Diversified ETF,350,0.09,0.2,1.0
+EUNL.DE,EUR,Diversified ETF,65,0.075,0.18,0.94
+IS3N.DE,EUR,Diversified ETF,30,0.06,0.24,1.06
+VUSA.DE,EUR,Diversified ETF,60,0.088,0.205,1.01

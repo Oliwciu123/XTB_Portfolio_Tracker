@@ -114,7 +114,9 @@ def test_multisheet_xlsx_uses_cash_operations_sheet(tmp_path: Path):
     closed.append(["Type", "Volume", "Open price"])
     closed.append(["Stock", 1, 10])
     cash = book.create_sheet("Cash Operations")
-    for line in (FIXTURES / "xtb_currency_prefix_cash_ops.csv").read_text(encoding="utf-8").splitlines():
+    for line in (
+        (FIXTURES / "xtb_currency_prefix_cash_ops.csv").read_text(encoding="utf-8").splitlines()
+    ):
         cash.append(line.split(";"))
     opened = book.create_sheet("Open Positions")
     opened.append(["Ticker", "Volume", "Open price"])
@@ -136,7 +138,11 @@ def test_multisheet_xlsx_uses_cash_operations_sheet(tmp_path: Path):
 def test_discover_keeps_pln_account_with_usd_and_eur(tmp_path: Path):
     _write_nested_pair(tmp_path)
     pln = (FIXTURES / "xtb_currency_prefix_cash_ops.csv").read_text(encoding="utf-8")
-    pln = pln.replace("11111111", "33333333").replace("PLN to USD", "EUR to PLN").replace("EX.US", "PKO.PL")
+    pln = (
+        pln.replace("11111111", "33333333")
+        .replace("PLN to USD", "EUR to PLN")
+        .replace("EX.US", "PKO.PL")
+    )
     folder = tmp_path / "33333333"
     folder.mkdir()
     name = "PLN_33333333_2006-01-01_2026-10-08.csv"
@@ -152,6 +158,6 @@ def test_extract_rejects_path_traversal(tmp_path: Path):
     with zipfile.ZipFile(archive, "w") as zf:
         zf.writestr("../outside.csv", "ID;Type;Time;Amount\n")
     dest = tmp_path / "dest"
-    with pytest.raises(ZipImportError, match="Niedozwolona ścieżka"):
+    with pytest.raises(ZipImportError, match="Unsafe archive path"):
         extract_xtb_zip(archive, dest)
     assert not (tmp_path / "outside.csv").exists()

@@ -18,6 +18,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 
+from xtb_analyzer.comment_parser import TRANSFER_RE, parse_exchange_rate
 from xtb_analyzer.flows import extract_deposits
 from xtb_analyzer.fx import fetch_fx_rates
 from xtb_analyzer.models import Account
@@ -39,9 +40,10 @@ class FxAttribution:
 def _cumulative_deposits_by_currency(
     accounts: list[Account],
     calendar: pd.DatetimeIndex,
+    fx: pd.DataFrame | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Cumulative foreign units received (D_c) and PLN spent (P_c) per currency."""
-    deposits = extract_deposits(accounts)
+    deposits = extract_deposits(accounts, fx=fx)
     currencies = ("PLN", "USD", "EUR")
     foreign = pd.DataFrame(0.0, index=calendar, columns=currencies)
     pln_cost = pd.DataFrame(0.0, index=calendar, columns=currencies)
@@ -52,6 +54,32 @@ def _cumulative_deposits_by_currency(
         currency = deposit.currency if deposit.currency in currencies else "PLN"
         foreign.loc[mask, currency] += float(deposit.amount_foreign)
         pln_cost.loc[mask, currency] += float(deposit.pln_spent)
+    present = {account.currency for account in accounts}
+    transactions = sorted(
+        (tx for account in accounts for tx in account.transactions), key=lambda tx: tx.timestamp
+    )
+    for tx in transactions:
+        conversion = TRANSFER_RE.search(tx.comment)
+        if not conversion or tx.amount <= 0:
+            continue
+        source, target = conversion.group("source").upper(), conversion.group("currency").upper()
+        if source not in present or target not in present or tx.currency != target:
+            continue
+        rate = parse_exchange_rate(tx.comment)
+        if not rate or rate <= 0:
+            raise ValueError("Missing internal conversion rate; FX attribution is unavailable.")
+        day = pd.Timestamp(tx.timestamp.date())
+        mask = calendar >= day
+        if not mask.any():
+            continue
+        row = foreign.loc[mask].iloc[0]
+        cost = pln_cost.loc[mask].iloc[0]
+        source_amount = float(tx.amount / rate)
+        basis = source_amount * cost[source] / row[source] if row[source] else 0.0
+        foreign.loc[mask, source] -= source_amount
+        foreign.loc[mask, target] += float(tx.amount)
+        pln_cost.loc[mask, source] -= basis
+        pln_cost.loc[mask, target] += basis
     return foreign, pln_cost
 
 
@@ -79,7 +107,7 @@ def compute_fx_attribution(
         )
     fx_aligned = fx.reindex(view.index, method="ffill").ffill().bfill()
 
-    foreign, pln_cost = _cumulative_deposits_by_currency(accounts, view.index)
+    foreign, pln_cost = _cumulative_deposits_by_currency(accounts, view.index, fx=fx)
 
     investment = pd.Series(0.0, index=view.index)
     fx_gain = pd.Series(0.0, index=view.index)
@@ -89,7 +117,11 @@ def compute_fx_attribution(
         local_value = view[f"local_{currency.lower()}"].astype(float)
         deposited_units = foreign[currency]
         spent_pln = pln_cost[currency]
-        rate = fx_aligned[_FX_COLUMN[currency]] if currency in _FX_COLUMN else pd.Series(1.0, index=view.index)
+        rate = (
+            fx_aligned[_FX_COLUMN[currency]]
+            if currency in _FX_COLUMN
+            else pd.Series(1.0, index=view.index)
+        )
 
         inv_c = (local_value - deposited_units) * rate
         fx_c = deposited_units * rate - spent_pln
@@ -104,7 +136,9 @@ def compute_fx_attribution(
                 "currency": currency,
                 "pln_spent": float(spent_pln.iloc[-1]),
                 "units_received": final_units,
-                "avg_deposit_rate": float(spent_pln.iloc[-1]) / final_units if final_units else None,
+                "avg_deposit_rate": float(spent_pln.iloc[-1]) / final_units
+                if final_units
+                else None,
                 "current_rate": float(rate.iloc[-1]),
                 "current_value_local": float(local_value.iloc[-1]),
                 "investment_gain_pln": float(inv_c.iloc[-1]),

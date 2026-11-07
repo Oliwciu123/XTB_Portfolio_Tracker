@@ -1,30 +1,41 @@
 """Professional interactive HTML report for the XTB portfolio.
 
-``generate_report()`` is the single entry point: it loads the CSV exports,
+``generate_report()`` is the single entry point: it loads XLSX/CSV exports,
 computes every metric and renders a self-contained ``report.html`` with
-interactive Plotly charts (plotly.js loaded from CDN).
+interactive Plotly charts with Plotly.js embedded for offline viewing.
 """
 
 from __future__ import annotations
 
 import html as html_lib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from functools import lru_cache
 from pathlib import Path
 
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.offline import get_plotlyjs
 
 from xtb_analyzer.attribution import FxAttribution, compute_fx_attribution
-from xtb_analyzer.benchmark import BENCHMARK_TICKERS, build_benchmark_suite, build_deposit_benchmark
+from xtb_analyzer.benchmark import (
+    BENCHMARK_TICKERS,
+    benchmark_in_currency,
+    build_benchmark_suite,
+    build_deposit_benchmark,
+    instrument_currency,
+)
 from xtb_analyzer.cash import income_by_currency
 from xtb_analyzer.charts import (
     BENCHMARK_META,
     PLOTLY_SHOW_CONFIG,
-    _polish_decimal,
+    _format_decimal,
     build_return_comparison_figure,
     plot_company_pnl,
     plot_currency_allocation,
+    plot_drawdown,
+    plot_fx_attribution_series,
     plot_holdings_allocation,
     plot_monthly_returns_heatmap,
     plot_nav_with_deposits,
@@ -32,14 +43,21 @@ from xtb_analyzer.charts import (
     prepare_return_comparison_data,
 )
 from xtb_analyzer.flows import analyze_conversion_losses, attach_deposits_to_nav, conversion_summary
+from xtb_analyzer.fx import fetch_fx_rates
+from xtb_analyzer.market_data import MarketData
 from xtb_analyzer.metrics import company_pnl_summary, format_company_pnl_table
 from xtb_analyzer.models import Account
 from xtb_analyzer.parser import discover_export_files, load_accounts
 from xtb_analyzer.portfolio import build_nav_series
-from xtb_analyzer.prices import fetch_benchmarks, fetch_prices, xtb_to_yahoo
+from xtb_analyzer.prices import fetch_benchmarks, xtb_to_yahoo
 from xtb_analyzer.returns import ReturnMeasures, compute_return_measures, twr_daily_returns
 from xtb_analyzer.risk import RiskStats, compute_risk_stats
 from xtb_analyzer.sectors import enrich_positions_with_sectors, sector_allocation
+
+
+@lru_cache(maxsize=1)
+def _plotly_bundle() -> str:
+    return get_plotlyjs()
 
 
 @dataclass
@@ -59,6 +77,7 @@ class ReportData:
     currency: str
     company_pnl: pd.DataFrame = field(default_factory=pd.DataFrame)
     custom_benchmarks: dict[str, dict[str, object]] = field(default_factory=dict)
+    is_demo: bool = False
 
 
 def build_custom_benchmark_payload(
@@ -73,11 +92,15 @@ def build_custom_benchmark_payload(
     """Simulate a deposit-matched benchmark for any Yahoo Finance / XTB ticker and format for Plotly."""
     raw = (ticker_input or "").strip().upper()
     if not raw:
-        raise ValueError("Podaj symbol instrumentu (np. AAPL, NVDA, BTC-USD).")
+        raise ValueError("Enter an instrument symbol, such as AAPL, NVDA, or BTC-USD.")
+    import re
+
+    if not re.fullmatch(r"[A-Z0-9^][A-Z0-9.^=_-]{0,39}", raw):
+        raise ValueError("Invalid ticker. Use a Yahoo Finance symbol, such as XTB.WA or BTC-USD.")
 
     yf_ticker = xtb_to_yahoo(raw)
     if index_series is None:
-        start = nav.index[0].date().isoformat()
+        start = (nav.index[0] - pd.Timedelta(days=7)).date().isoformat()
         end = (nav.index[-1] + pd.Timedelta(days=1)).date().isoformat()
         fetched = fetch_benchmarks(
             [yf_ticker],
@@ -89,7 +112,7 @@ def build_custom_benchmark_payload(
         index_series = fetched.get(yf_ticker, pd.Series(dtype=float))
 
     if index_series is None or index_series.dropna().empty:
-        raise ValueError(f"Nie znaleziono danych historycznych dla symbolu '{raw}' ({yf_ticker}).")
+        raise ValueError(f"No historical data found for symbol '{raw}' ({yf_ticker}).")
 
     key = f"custom_{yf_ticker.lower().replace('^', '').replace('-', '_').replace('.', '_')}"
     sim_series = build_deposit_benchmark(
@@ -101,9 +124,12 @@ def build_custom_benchmark_payload(
         use_cache=use_cache,
         refresh_latest=refresh_latest,
         index_series=index_series,
+        quote_currency=instrument_currency(yf_ticker),
     )
     if sim_series.dropna().empty:
-        raise ValueError(f"Brak pokrycia dat dla symbolu '{raw}'.")
+        raise ValueError(
+            f"Historia '{raw}' does not cover the full portfolio period, or FX rates are missing."
+        )
 
     comp = prepare_return_comparison_data(nav, {key: sim_series}, currency=currency)
     monthly = comp.benchmarks_monthly[key]
@@ -118,7 +144,7 @@ def build_custom_benchmark_payload(
         "x": [pd.Timestamp(ts).strftime("%Y-%m-%d") for ts in monthly.index],
         "y": [round(float(v), 2) for v in monthly.tolist()],
         "final_return": round(final_ret, 2),
-        "trace_name": f"{label} ({_polish_decimal(final_ret)}%)",
+        "trace_name": f"{label} ({_format_decimal(final_ret)}%)",
     }
 
 
@@ -132,7 +158,8 @@ def collect_report_data(
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = True,
-    on_progress=None,
+    on_progress: Callable[[float, str], None] | None = None,
+    market_data: MarketData | None = None,
 ) -> ReportData:
     currency = currency.lower()
 
@@ -140,77 +167,107 @@ def collect_report_data(
         if on_progress is not None:
             on_progress(fraction, message)
 
-    progress(0.35, "Pobieram ceny i kursy…")
-    nav, _, positions = build_nav_series(accounts, use_cache=use_cache, live_prices=refresh_latest)
-    progress(0.55, "Liczenie wpłat i stóp zwrotu…")
-    nav = attach_deposits_to_nav(nav, accounts, use_cache=use_cache)
-    positions = enrich_positions_with_sectors(positions)
+    progress(0.35, "Fetching prices and exchange rates...")
+    dates = [tx.timestamp for account in accounts for tx in account.transactions]
+    if not dates:
+        raise ValueError("No transactions found. Import the complete XTB cash-operation history.")
+    fx = (
+        market_data.fx
+        if market_data is not None
+        else fetch_fx_rates(
+            start=(pd.Timestamp(min(dates)) - pd.Timedelta(days=7)).date().isoformat(),
+            use_cache=use_cache,
+            refresh_latest=refresh_latest,
+        )
+    )
+    nav_kwargs = (
+        {"prices": market_data.prices, "quote_currencies": market_data.quote_currencies}
+        if market_data is not None
+        else {}
+    )
+    nav, _, positions = build_nav_series(
+        accounts, use_cache=use_cache, live_prices=refresh_latest, fx=fx, **nav_kwargs
+    )
+    progress(0.55, "Calculating cash flows and returns...")
+    nav = attach_deposits_to_nav(nav, accounts, use_cache=use_cache, fx=fx)
+    if market_data is None:
+        positions = enrich_positions_with_sectors(positions)
+    elif not positions.empty:
+        positions = positions.assign(
+            sector=positions["symbol"].map(market_data.sectors).fillna("Unknown")
+        )
 
-    measures = compute_return_measures(accounts, nav, currency, use_cache=use_cache)
+    measures = compute_return_measures(accounts, nav, currency, fx=fx, use_cache=use_cache)
     twr_returns = twr_daily_returns(nav, currency)
-    attribution = compute_fx_attribution(accounts, nav, use_cache=use_cache)
+    attribution = compute_fx_attribution(accounts, nav, fx=fx, use_cache=use_cache)
 
-    progress(0.68, "Porównanie z benchmarkami…")
-    start = twr_returns.index[0].date().isoformat() if not twr_returns.empty else nav.index[0].date().isoformat()
+    progress(0.68, "Comparing benchmarks...")
+    start = (
+        ((twr_returns.index[0] if not twr_returns.empty else nav.index[0]) - pd.Timedelta(days=7))
+        .date()
+        .isoformat()
+    )
     end = (nav.index[-1] + pd.Timedelta(days=1)).date().isoformat()
-    index_levels = fetch_benchmarks(
-        list(BENCHMARK_TICKERS.values()),
-        start=start,
-        end=end,
-        use_cache=use_cache,
-        refresh_latest=refresh_latest,
+    index_levels = (
+        market_data.benchmarks
+        if market_data is not None
+        else fetch_benchmarks(
+            list(BENCHMARK_TICKERS.values()),
+            start=start,
+            end=end,
+            use_cache=use_cache,
+            refresh_latest=refresh_latest,
+        )
+    )
+    benchmark_specs = (
+        {key: key for key in index_levels} if market_data is not None else BENCHMARK_TICKERS
     )
     risk = compute_risk_stats(
         twr_returns,
         benchmarks={
-            BENCHMARK_META[key][0]: index_levels.get(ticker, pd.Series(dtype=float))
-            for key, ticker in BENCHMARK_TICKERS.items()
+            BENCHMARK_META[key][0]: benchmark_in_currency(
+                index_levels.get(ticker, pd.Series(dtype=float)),
+                market_data.benchmark_currencies.get(key, "USD") if market_data else "USD",
+                currency,
+                fx,
+            )
+            for key, ticker in benchmark_specs.items()
         },
     )
 
-    benchmarks = build_benchmark_suite(
-        accounts,
-        nav.index,
-        currency=currency,
-        use_cache=use_cache,
-        refresh_latest=refresh_latest,
+    benchmarks = (
+        {
+            key: build_deposit_benchmark(
+                accounts,
+                nav.index,
+                currency,
+                index_series=levels,
+                fx=fx,
+                series_name=key,
+                quote_currency=market_data.benchmark_currencies.get(key, "USD"),
+            )
+            for key, levels in index_levels.items()
+        }
+        if market_data is not None
+        else build_benchmark_suite(
+            accounts,
+            nav.index,
+            currency=currency,
+            use_cache=use_cache,
+            refresh_latest=refresh_latest,
+            fx=fx,
+            indices=index_levels,
+        )
     )
 
-    conversion_losses = analyze_conversion_losses(accounts)
-    company_pnl = company_pnl_summary(accounts, positions, currency=currency, use_cache=use_cache)
+    conversion_losses = analyze_conversion_losses(accounts, fx=fx)
+    company_pnl = company_pnl_summary(
+        accounts, positions, currency=currency, fx_row=fx.iloc[-1], use_cache=use_cache
+    )
 
-    # Precompute custom benchmark traces for portfolio symbols from cached prices
     custom_benchmarks: dict[str, dict[str, object]] = {}
-    portfolio_symbols = sorted({tx.symbol for acc in accounts for tx in acc.transactions if tx.symbol})
-    if portfolio_symbols and not nav.empty:
-        try:
-            cached_prices = fetch_prices(
-                portfolio_symbols,
-                start=nav.index[0].date().isoformat(),
-                end=(nav.index[-1] + pd.Timedelta(days=1)).date().isoformat(),
-                use_cache=True,
-                refresh_latest=False,
-            )
-            for sym in portfolio_symbols:
-                if sym in cached_prices.columns and not cached_prices[sym].dropna().empty:
-                    try:
-                        payload = build_custom_benchmark_payload(
-                            accounts,
-                            nav,
-                            sym,
-                            currency=currency,
-                            use_cache=True,
-                            refresh_latest=False,
-                            index_series=cached_prices[sym].dropna(),
-                        )
-                        custom_benchmarks[sym.upper()] = payload
-                        custom_benchmarks[xtb_to_yahoo(sym).upper()] = payload
-                    except Exception:
-                        pass
-        except Exception:
-            pass
 
-    progress(0.88, "Składam raport…")
+    progress(0.88, "Building the report...")
 
     return ReportData(
         accounts=accounts,
@@ -228,6 +285,7 @@ def collect_report_data(
         currency=currency,
         company_pnl=company_pnl,
         custom_benchmarks=custom_benchmarks,
+        is_demo=market_data.synthetic if market_data is not None else False,
     )
 
 
@@ -239,29 +297,84 @@ def collect_report_data(
 def _fmt_num(value: float | None, decimals: int = 2) -> str:
     if value is None or pd.isna(value):
         return "—"
-    return f"{value:,.{decimals}f}".replace(",", "\u00a0").replace(".", ",")
+    return f"{value:,.{decimals}f}"
 
 
 def _fmt_pct(value: float | None, decimals: int = 2, sign: bool = True) -> str:
     if value is None or pd.isna(value):
         return "—"
     pattern = f"{{:+.{decimals}f}}%" if sign else f"{{:.{decimals}f}}%"
-    return pattern.format(value * 100).replace(".", ",")
+    return pattern.format(value * 100)
 
 
-def _fig_html(fig: go.Figure) -> str:
-    fig.update_layout(width=None, autosize=True)
-    return fig.to_html(full_html=False, include_plotlyjs=False, config=PLOTLY_SHOW_CONFIG)
+_FIXED_CHARTS = {"chart-monthly", "chart-pnl", "chart-holdings"}
 
 
-def _chart(fig: go.Figure, extra_class: str = "") -> str:
+def _report_figure(fig: go.Figure, plot_id: str | None = None) -> go.Figure:
+    fig = go.Figure(fig)
+    fig.update_layout(width=None, autosize=True, title_text="", margin_t=24)
+    if plot_id in _FIXED_CHARTS:
+        fig.update_layout(dragmode=False)
+        fig.update_xaxes(fixedrange=True)
+        fig.update_yaxes(fixedrange=True)
+    return fig
+
+
+def _chart_heading(fig: go.Figure) -> str:
+    import re
+
+    parts = re.split(r"<br\s*/?>", fig.layout.title.text or "", maxsplit=1)
+
+    def clean(text):
+        return html_lib.escape(html_lib.unescape(re.sub(r"<[^>]+>", "", text)))
+
+    subtitle = f"<p>{clean(parts[1])}</p>" if len(parts) > 1 else ""
+    return f"<div class='chart-heading'><h3>{clean(parts[0])}</h3>{subtitle}</div>"
+
+
+def _fig_html(fig: go.Figure, plot_id: str | None = None) -> str:
+    fig = _report_figure(fig, plot_id)
+    config = dict(PLOTLY_SHOW_CONFIG)
+    if plot_id in _FIXED_CHARTS:
+        config.update(scrollZoom=False, doubleClick=False)
+    return fig.to_html(full_html=False, include_plotlyjs=False, config=config, div_id=plot_id)
+
+
+def _chart(fig: go.Figure, extra_class: str = "", plot_id: str | None = None) -> str:
     cls = f"chart {extra_class}".strip()
-    return f"<div class='{cls}'>{_fig_html(fig)}</div>"
+    controls = ""
+    if plot_id:
+        if plot_id in ("chart-nav", "chart-benchmark"):
+            controls += (
+                "<div class='chart-ranges' role='group' aria-label='Time range'>"
+                + "".join(
+                    f"<button type='button' data-chart-range='{period}'>{label}</button>"
+                    for period, label in (
+                        ("1d", "1D"),
+                        ("1w", "1W"),
+                        ("1m", "1M"),
+                        ("3m", "3M"),
+                        ("6m", "6M"),
+                        ("ytd", "YTD"),
+                        ("1y", "1Y"),
+                        ("3y", "3Y"),
+                        ("5y", "5Y"),
+                        ("all", "All"),
+                    )
+                )
+                + "</div>"
+            )
+        controls += "<div class='chart-actions'>"
+        if plot_id not in _FIXED_CHARTS | {"chart-currency", "chart-sector"}:
+            controls += "<button type='button' data-chart-reset>Reset view</button>"
+        controls += "<button type='button' data-chart-export>Save PNG</button></div>"
+        controls = f"<div class='chart-controls' data-chart-target='{plot_id}'>{controls}</div>"
+    return f"<div class='{cls}'>{_chart_heading(fig)}{controls}{_fig_html(fig, plot_id)}</div>"
 
 
 def _table_html(frame: pd.DataFrame, float_decimals: int = 2, table_id: str = "") -> str:
     if frame.empty:
-        return "<p class='muted'>Brak danych.</p>"
+        return "<p class='muted'>No data available.</p>"
     formatted = frame.copy()
     for column in formatted.columns:
         if pd.api.types.is_float_dtype(formatted[column]):
@@ -279,7 +392,9 @@ def _tone(value: float | None) -> str:
     return "pos" if value >= 0 else "neg"
 
 
-def _stat_card(label: str, value: str, sub: str = "", tone: str = "neutral", big: bool = False) -> str:
+def _stat_card(
+    label: str, value: str, sub: str = "", tone: str = "neutral", big: bool = False
+) -> str:
     size = " stat-big" if big else ""
     sub_html = f"<div class='stat-sub'>{html_lib.escape(sub)}</div>" if sub else ""
     return (
@@ -300,27 +415,43 @@ def _kpi_section(data: ReportData) -> str:
     measures = data.measures
     currency = measures.currency
     cards = [
-        _stat_card("Wartość portfela", f"{_fmt_num(measures.final_value)} {currency}", "bieżąca wycena rachunków", big=True),
-        _stat_card("Suma wpłat", f"{_fmt_num(measures.invested)} {currency}", "łączny zainwestowany kapitał", big=True),
         _stat_card(
-            "Zysk / strata",
+            "Portfolio NAV",
+            f"{_fmt_num(measures.final_value)} {currency}",
+            "current account valuation",
+            big=True,
+        ),
+        _stat_card(
+            "Gross contributions",
+            f"{_fmt_num(measures.invested)} {currency}",
+            f"withdrawals: {_fmt_num(measures.withdrawn)} {currency}",
+            big=True,
+        ),
+        _stat_card(
+            "Profit / loss",
             f"{_fmt_num(measures.gain)} {currency}",
-            "wartość − wpłaty",
+            "NAV + withdrawals − contributions",
             _tone(measures.gain),
             big=True,
         ),
-        _stat_card("ROI", _fmt_pct(measures.roi), "prosty zwrot: wartość ÷ wpłaty − 1", _tone(measures.roi), big=True),
+        _stat_card(
+            "ROI",
+            _fmt_pct(measures.roi),
+            "profit divided by gross contributions",
+            _tone(measures.roi),
+            big=True,
+        ),
         _stat_card(
             "MWR (XIRR)",
             _fmt_pct(measures.mwr),
-            f"w skali roku: {_fmt_pct(measures.xirr)}",
+            f"annualized: {_fmt_pct(measures.xirr)}",
             _tone(measures.mwr),
             big=True,
         ),
         _stat_card(
             "TWR",
             _fmt_pct(measures.twr),
-            f"w skali roku: {_fmt_pct(measures.twr_annualized)}",
+            f"annualized: {_fmt_pct(measures.twr_annualized)}",
             _tone(measures.twr),
             big=True,
         ),
@@ -332,7 +463,7 @@ def _risk_cards_html(risk: RiskStats) -> str:
     drawdown_period = (
         f"{risk.max_drawdown_start} → {risk.max_drawdown_end}"
         if risk.max_drawdown_start and risk.max_drawdown_end
-        else "na bazie TWR"
+        else "based on TWR"
     )
     primary_bench = next(
         (b for b in risk.benchmarks if b.beta is not None or b.alpha_annual is not None),
@@ -343,14 +474,25 @@ def _risk_cards_html(risk: RiskStats) -> str:
     bench_name = primary_bench.name if primary_bench else "S&P 500 TR"
 
     cards = [
-        _stat_card("Zmienność (roczna)", _fmt_pct(risk.volatility_annual, sign=False), "odchylenie stóp dziennych"),
-        _stat_card("Wskaźnik Sharpe'a", _fmt_num(risk.sharpe), "zwrot do zmienności"),
-        _stat_card("Wskaźnik Sortino", _fmt_num(risk.sortino), "zwrot do ryzyka spadku"),
-        _stat_card("Alfa (roczna)", _fmt_pct(alpha_val), f"względem {bench_name}", _tone(alpha_val)),
-        _stat_card("Beta", _fmt_num(beta_val), f"wrażliwość względem {bench_name}"),
-        _stat_card("Maks. obsunięcie", _fmt_pct(risk.max_drawdown), drawdown_period, _tone(risk.max_drawdown)),
-        _stat_card("Najlepszy miesiąc", _fmt_pct(risk.best_month), tone="pos"),
-        _stat_card("Najgorszy miesiąc", _fmt_pct(risk.worst_month), tone="neg"),
+        _stat_card(
+            "Annualized volatility",
+            _fmt_pct(risk.volatility_annual, sign=False),
+            "standard deviation of daily returns",
+        ),
+        _stat_card("Sharpe ratio", _fmt_num(risk.sharpe), "return relative to volatility"),
+        _stat_card("Sortino ratio", _fmt_num(risk.sortino), "return relative to downside risk"),
+        _stat_card(
+            "Annualized alpha", _fmt_pct(alpha_val), f"relative to {bench_name}", _tone(alpha_val)
+        ),
+        _stat_card("Beta", _fmt_num(beta_val), f"sensitivity relative to {bench_name}"),
+        _stat_card(
+            "Maximum drawdown",
+            _fmt_pct(risk.max_drawdown),
+            drawdown_period,
+            _tone(risk.max_drawdown),
+        ),
+        _stat_card("Best month", _fmt_pct(risk.best_month), tone="pos"),
+        _stat_card("Worst month", _fmt_pct(risk.worst_month), tone="neg"),
     ]
     return "<div class='stat-grid'>" + "".join(cards) + "</div>"
 
@@ -362,16 +504,16 @@ def _conversion_summary_section(stats: dict[str, float], losses: pd.DataFrame) -
 
     cards = [
         _stat_card(
-            "Łączny koszt przewalutowań (0,5%)",
+            "Estimated FX conversion cost (0.5%)",
             f"{_fmt_num(total_loss)} PLN",
-            f"prowizja XTB · liczba przewalutowań: {ops_count}",
+            f"assumed fee · conversions: {ops_count}",
             "neg" if total_loss > 0 else "neutral",
             big=True,
         ),
         _stat_card(
-            "Suma przewalutowanych środków",
+            "Total converted capital",
             f"{_fmt_num(total_converted)} PLN",
-            "łączny wolumen wymiany PLN → USD/EUR",
+            "total PLN conversion volume",
             "neutral",
             big=True,
         ),
@@ -386,23 +528,23 @@ def _attribution_section(attribution: FxAttribution) -> str:
 
     cards = [
         _stat_card(
-            "Zysk z inwestycji",
+            "Investment gain",
             f"{_fmt_num(attribution.investment_gain_pln)} PLN",
-            f"{_fmt_pct(inv_share, 0, sign=False)} wyniku" if inv_share is not None else "",
+            f"{_fmt_pct(inv_share, 0, sign=False)} of total gain" if inv_share is not None else "",
             _tone(attribution.investment_gain_pln),
             big=True,
         ),
         _stat_card(
-            "Zysk walutowy",
+            "FX gain",
             f"{_fmt_num(attribution.fx_gain_pln)} PLN",
-            f"{_fmt_pct(fx_share, 0, sign=False)} wyniku" if fx_share is not None else "",
+            f"{_fmt_pct(fx_share, 0, sign=False)} of total gain" if fx_share is not None else "",
             _tone(attribution.fx_gain_pln),
             big=True,
         ),
         _stat_card(
-            "Wynik łączny",
+            "Total gain",
             f"{_fmt_num(total)} PLN",
-            "inwestycje + waluta",
+            "investment + FX",
             _tone(total),
             big=True,
         ),
@@ -414,22 +556,24 @@ def _attribution_section(attribution: FxAttribution) -> str:
 
     frame = attribution.by_currency.copy()
     frame["fx_change"] = frame.apply(
-        lambda row: row["current_rate"] / row["avg_deposit_rate"] - 1
-        if row["avg_deposit_rate"]
-        else None,
+        lambda row: (
+            row["current_rate"] / row["avg_deposit_rate"] - 1 if row["avg_deposit_rate"] else None
+        ),
         axis=1,
     )
     display = pd.DataFrame(
         {
-            "Waluta": frame["currency"],
-            "Wydane PLN": frame["pln_spent"].map(_fmt_num),
-            "Otrzymano": frame.apply(lambda r: f"{_fmt_num(r['units_received'])} {r['currency']}", axis=1),
-            "Śr. kurs wpłat": frame["avg_deposit_rate"].map(lambda v: _fmt_num(v, 4)),
-            "Kurs obecny": frame["current_rate"].map(lambda v: _fmt_num(v, 4)),
-            "Zmiana kursu": frame["fx_change"].map(_fmt_pct),
-            "Zysk z inwestycji": frame["investment_gain_pln"].map(lambda v: f"{_fmt_num(v)} PLN"),
-            "Zysk walutowy": frame["fx_gain_pln"].map(lambda v: f"{_fmt_num(v)} PLN"),
-            "Łącznie": frame["total_gain_pln"].map(lambda v: f"{_fmt_num(v)} PLN"),
+            "Currency": frame["currency"],
+            "PLN capital cost": frame["pln_spent"].map(_fmt_num),
+            "Received": frame.apply(
+                lambda r: f"{_fmt_num(r['units_received'])} {r['currency']}", axis=1
+            ),
+            "Average contribution FX": frame["avg_deposit_rate"].map(lambda v: _fmt_num(v, 4)),
+            "Current FX": frame["current_rate"].map(lambda v: _fmt_num(v, 4)),
+            "FX change": frame["fx_change"].map(_fmt_pct),
+            "Investment gain": frame["investment_gain_pln"].map(lambda v: f"{_fmt_num(v)} PLN"),
+            "FX gain": frame["fx_gain_pln"].map(lambda v: f"{_fmt_num(v)} PLN"),
+            "Total": frame["total_gain_pln"].map(lambda v: f"{_fmt_num(v)} PLN"),
         }
     )
     return grid + _table_html(display)
@@ -437,18 +581,72 @@ def _attribution_section(attribution: FxAttribution) -> str:
 
 def _income_table(income: pd.DataFrame) -> str:
     if income.empty:
-        return "<p class='muted'>Brak dywidend i odsetek w analizowanym okresie.</p>"
+        return "<p class='muted'>No dividends or interest in this period.</p>"
     frame = income.rename(
         columns={
-            "currency": "Waluta",
-            "dividends": "Dywidendy",
-            "interest": "Odsetki",
-            "taxes": "Podatki u źródła",
-            "net_income": "Netto",
+            "currency": "Currency",
+            "dividends": "Dividends",
+            "interest": "Interest",
+            "taxes": "Withholding taxes",
+            "net_income": "Net income",
         }
     )
     return _table_html(frame)
 
+
+_DESIGN_CSS = """
+:root { --bg:#0b1221; --surface:#101e33; --card:#15253e; --border:#263c59; --accent:#818cf8; --accent-light:#a5b4fc; }
+body { background:radial-gradient(ellipse at 10% 0%,#182d49 0%,transparent 45%),var(--bg); }
+.hero-title-group h1 { letter-spacing:-1.3px; }
+.panel-block { background:#101e33; border:1px solid #263c59; border-radius:22px; padding:26px; margin-top:24px; }
+.panel-block h2 { color:#c7d2fe; }
+.nav-cloud:nth-child(1) { border-top:3px solid #34d399; }
+.nav-cloud:nth-child(2) { border-top:3px solid #a78bfa; }
+.nav-cloud:nth-child(3) { border-top:3px solid #38bdf8; }
+.nav-cloud:nth-child(4) { border-top:3px solid #fbbf24; }
+.nav-cloud.active { background:#233456; border-color:#818cf8; }
+.stat { border-radius:16px; border:1px solid #2b405d; }
+.kpi .stat:nth-child(1) { background:#163b39; }
+.kpi .stat:nth-child(2) { background:#203e60; }
+.kpi .stat:nth-child(3) { background:#34305a; }
+.kpi .stat:nth-child(4) { background:#3d3441; }
+.chart { border-radius:16px; background:#101e33; }
+.search-input:focus { outline:2px solid #a78bfa; outline-offset:3px; }
+button:focus-visible,a:focus-visible { outline:2px solid #38bdf8; outline-offset:4px; }
+.bench-feedback { min-height:24px; color:#c4b5fd; }
+.js-plotly-plot .plotly .modebar { background:#15253e!important; border-radius:8px; }
+.js-plotly-plot .plotly .modebar { display:none!important; }
+.chart-heading { padding:22px 24px 4px; text-align:left; }
+.chart-heading h3 { margin:0; font-size:17px; line-height:1.5; color:#e2e8f0; overflow-wrap:anywhere; }
+.chart-heading p { margin:6px 0 0; color:#94a3b8; font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
+.chart-controls { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:12px 24px; }
+.chart-ranges,.chart-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.chart-controls button { font:inherit; font-size:12px; cursor:pointer; border:1px solid transparent; border-radius:8px; padding:7px 12px; background:#172840; color:#a7b8d1; }
+.chart-controls button:hover,.chart-controls button.active { background:#293c60; color:#e0e7ff; border-color:#52638f; }
+@media(max-width:700px) { .chart-heading { padding:16px 12px 4px; } .chart-controls { padding:10px 12px; } .chart-actions { margin-left:auto; } }
+@media(max-width:700px) { .panel-block { padding:12px; border-radius:16px; } .container { padding:0 12px 32px; } }
+@media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
+@media(min-width:1100px) {
+  .container { max-width:1520px; padding:0 28px 60px; }
+  header.hero { flex-direction:row; justify-content:space-between; text-align:left; padding:14px 0; gap:16px; }
+  .hero-title-group { align-items:flex-start; }
+  .hero-title-group h1 { font-size:28px; text-align:left; margin-bottom:4px; }
+  .hero-meta { font-size:12px; justify-content:flex-start; }
+  .section-switcher-wrap { margin:10px 0 14px; }
+  .switcher-header { margin-bottom:6px; }
+  .view-mode-btn { padding:4px 10px; }
+  .nav-cloud { padding:8px 16px; gap:2px; }
+  .cloud-top { display:none; }
+  .cloud-title { font-size:16px; }
+  .panel-block { padding:16px 20px; margin:16px 0; }
+  .panel-block h2 { font-size:18px; }
+  .section-desc { margin-bottom:8px; font-size:12px; }
+  .stat-grid.kpi { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; margin:10px 0 0; }
+  .stat-grid.kpi .stat { min-width:0; max-width:none; padding:12px 8px; }
+  .kpi .stat-value { font-size:18px; }
+  .kpi .stat-label,.kpi .stat-sub { font-size:11px; }
+}
+"""
 
 _CSS = """
 :root {
@@ -974,9 +1172,6 @@ h3 {
   margin: 16px 0;
   overflow: visible;
 }
-.js-plotly-plot .plotly .modebar-btn:not([data-title*="Download"]):not([data-title*="png"]) {
-  display: none !important;
-}
 .js-plotly-plot .plotly .modebar-logo {
   display: none !important;
 }
@@ -1054,42 +1249,54 @@ td.live-updated { animation: cellFlash 1.1s ease-out; }
 """
 
 
-def _now_warsaw() -> pd.Timestamp:
-    """Current timestamp in Polish timezone (Europe/Warsaw, CET/CEST)."""
-    try:
-        return pd.Timestamp.now(tz="Europe/Warsaw")
-    except Exception:
-        return pd.Timestamp.now()
+def _now_utc() -> pd.Timestamp:
+    """Current report-generation timestamp in UTC."""
+    return pd.Timestamp.now(tz="UTC")
 
 
-def is_market_open(now: pd.Timestamp | None = None) -> bool:
-    """True during European (GPW/Xetra 09:00-17:30 CET) or US (NYSE/NASDAQ 09:30-16:00 ET) market hours."""
-    try:
-        ts = now.tz_convert("Europe/Warsaw") if now is not None else _now_warsaw()
-    except Exception:
-        ts = _now_warsaw()
-    if ts.weekday() >= 5:
-        return False
-    minutes = ts.hour * 60 + ts.minute
-    return 9 * 60 <= minutes <= 22 * 60
-
-
-def build_live_payload(data: ReportData) -> dict[str, object]:
+def build_live_payload(
+    data: ReportData, custom_tickers: list[str] | None = None
+) -> dict[str, object]:
     """Build live HTML fragments and metadata for in-place DOM updates."""
-    now_ts = _now_warsaw()
+    now_ts = _now_utc()
     now_str = now_ts.strftime("%H:%M:%S")
     generated_str = now_ts.strftime("%Y-%m-%d %H:%M:%S")
+    figures = report_figures(data)
     return {
         "currency": data.currency,
         "as_of": f"{data.measures.as_of} ({now_str})",
-        "period_days": f"{data.measures.period_days} dni",
+        "period_days": f"{data.measures.period_days} days",
         "generated": generated_str,
+        "charts": {
+            key: json.loads(_report_figure(fig, key).to_json()) for key, fig in figures.items()
+        },
+        "chart_headings": {key: _chart_heading(fig) for key, fig in figures.items()},
+        "custom_benchmarks": [
+            build_custom_benchmark_payload(data.accounts, data.nav, ticker, data.currency)
+            for ticker in (custom_tickers or [])
+        ],
         "kpi_html": _kpi_section(data),
         "attribution_html": _attribution_section(data.attribution),
-        "conversion_html": _conversion_summary_section(data.conversion_stats, data.conversion_losses),
+        "conversion_html": _conversion_summary_section(
+            data.conversion_stats, data.conversion_losses
+        ),
         "income_html": _income_table(data.income),
         "risk_html": _risk_cards_html(data.risk),
         "company_pnl_html": _table_html(format_company_pnl_table(data.company_pnl, data.currency)),
+    }
+
+
+def report_figures(data: ReportData) -> dict[str, go.Figure]:
+    return {
+        "chart-nav": plot_nav_with_deposits(data.nav, data.currency),
+        "chart-monthly": plot_monthly_returns_heatmap(data.twr_returns, data.currency),
+        "chart-benchmark": build_return_comparison_figure(data.nav, data.benchmarks, data.currency),
+        "chart-pnl": plot_company_pnl(data.company_pnl, data.currency),
+        "chart-holdings": plot_holdings_allocation(data.positions),
+        "chart-currency": plot_currency_allocation(data.positions),
+        "chart-sector": plot_sector_allocation(data.sector_alloc),
+        "chart-drawdown": plot_drawdown(data.twr_returns, data.currency),
+        "chart-fx": plot_fx_attribution_series(data.attribution),
     }
 
 
@@ -1097,11 +1304,12 @@ _LIVE_SCRIPT = """
 <script>
 (function() {
   const CURRENCY = __CURRENCY_JSON__;
+  const IS_DEMO = __DEMO_JSON__;
   const PRELOADED_BENCHMARKS = __CUSTOM_BENCHMARKS_JSON__;
-  const POLL_INTERVAL_MS = 15000;
+  const POLL_INTERVAL_MS = 10000;
   const EXTRA_COLORS = ['#f472b6', '#a3e635', '#fb923c', '#818cf8', '#2dd4bf', '#e879f9', '#38bdf8', '#facc15'];
   let extraColorIdx = 0;
-  let liveEnabled = true;
+  let liveEnabled = !IS_DEMO;
   let busy = false;
   let currentCompanyFilter = 'all';
   let currentCompanySearch = '';
@@ -1183,8 +1391,8 @@ _LIVE_SCRIPT = """
       let matchFilter = true;
       if (currentCompanyFilter === 'gain') matchFilter = isGain;
       else if (currentCompanyFilter === 'loss') matchFilter = isLoss;
-      else if (currentCompanyFilter === 'open') matchFilter = status.includes('otwarta');
-      else if (currentCompanyFilter === 'closed') matchFilter = status.includes('zamknięta');
+      else if (currentCompanyFilter === 'open') matchFilter = (status.includes('open') || status.includes('partially'));
+      else if (currentCompanyFilter === 'closed') matchFilter = status.includes('closed');
 
       const matchQuery = !query || symbol.includes(query) || status.includes(query);
       tr.style.display = (matchFilter && matchQuery) ? '' : 'none';
@@ -1198,7 +1406,7 @@ _LIVE_SCRIPT = """
       headers.forEach(function(th, colIdx) {
         if (th.dataset.sortBound === '1') return;
         th.dataset.sortBound = '1';
-        th.title = 'Kliknij, aby posortować kolumnę';
+        th.title = 'Click to sort this column';
         th.addEventListener('click', function() {
           const tbody = table.querySelector('tbody');
           if (!tbody) return;
@@ -1211,7 +1419,7 @@ _LIVE_SCRIPT = """
               .replace(/\\u00a0/g, '')
               .replace(/\\s+/g, '')
               .replace(/PLN|USD|EUR|%|#/gi, '')
-              .replace(',', '.');
+              .replace(/,/g, '');
             const num = parseFloat(clean);
             return Number.isNaN(num) ? cellText.toLowerCase() : num;
           }
@@ -1276,18 +1484,27 @@ _LIVE_SCRIPT = """
     const dot = document.getElementById('live-dot');
     const text = document.getElementById('live-status-text');
     if (!badge || !dot || !text) return;
+    if (IS_DEMO) { badge.disabled = true; text.textContent = 'Offline synthetic demo'; dot.classList.remove('on'); return; }
+    if (!(window.pywebview && window.pywebview.api && window.pywebview.api.get_live_update)) {
+      badge.disabled = true;
+      text.textContent = 'Saved snapshot';
+      dot.classList.remove('on');
+      dot.classList.add('off');
+      return;
+    }
+    badge.disabled = false;
     if (liveEnabled) {
       badge.classList.add('is-on');
       badge.classList.remove('is-off');
       dot.classList.add('on');
       dot.classList.remove('off');
-      text.textContent = lastTime ? 'Statystyki LIVE: WŁĄCZONE · ' + lastTime : 'Statystyki LIVE: WŁĄCZONE';
+      text.textContent = lastTime ? 'Live updates: ON · ' + lastTime : 'Live updates: ON';
     } else {
       badge.classList.add('is-off');
       badge.classList.remove('is-on');
       dot.classList.add('off');
       dot.classList.remove('on');
-      text.textContent = 'Statystyki LIVE: WYŁĄCZONE';
+      text.textContent = 'Live updates: OFF';
     }
   }
 
@@ -1295,23 +1512,33 @@ _LIVE_SCRIPT = """
     if (window.pywebview && window.pywebview.api && window.pywebview.api.get_live_update) {
       return await window.pywebview.api.get_live_update(CURRENCY);
     }
-    if (window.location.protocol.startsWith('http')) {
-      const resp = await fetch('/api/live?currency=' + encodeURIComponent(CURRENCY), {
-        headers: { 'Accept': 'application/json' },
-        cache: 'no-store'
-      });
-      if (!resp.ok) return null;
-      return await resp.json();
-    }
     return null;
   }
 
   async function tick() {
-    if (!liveEnabled || busy) return;
+    if (!liveEnabled || busy || document.hidden) return;
     busy = true;
     try {
       const payload = await fetchLivePayload();
       if (payload) {
+        if (payload.error) throw new Error(payload.error);
+        for (const [id, figure] of Object.entries(payload.charts || {})) {
+          const gd = document.getElementById(id);
+          if (!gd || !window.Plotly) continue;
+          const heading = gd.closest('.chart').querySelector('.chart-heading');
+          if (heading && payload.chart_headings && payload.chart_headings[id]) heading.outerHTML = payload.chart_headings[id];
+          const traces = figure.data;
+          if (id === 'chart-benchmark') {
+            const extra = gd.data.slice(figure.data.length);
+            figure.data.forEach((trace, i) => { if (gd.data[i]) trace.visible = gd.data[i].visible; });
+            traces.push(...extra);
+          }
+          await window.Plotly.react(gd, traces, Object.assign({}, figure.layout, {width: null, autosize: true}), gd._context);
+        }
+        for (const custom of payload.custom_benchmarks || []) {
+          const btn = document.querySelector('[data-bench-key="' + custom.key + '"]');
+          if (btn) await window.Plotly.restyle('chart-benchmark', {x: [custom.x], y: [custom.y], name: custom.trace_name}, [Number(btn.dataset.benchTrace)]);
+        }
         updateContainerInPlace('live-kpi', payload.kpi_html);
         updateContainerInPlace('live-attribution', payload.attribution_html);
         updateContainerInPlace('live-conversion', payload.conversion_html);
@@ -1328,9 +1555,15 @@ _LIVE_SCRIPT = """
         if (genEl && payload.generated) genEl.textContent = payload.generated;
         const timePart = (payload.generated || '').split(' ')[1] || '';
         setLiveButtonState(timePart);
+      } else {
+        const text = document.getElementById('live-status-text');
+        if (text) text.textContent = 'Saved report · live updates require the app';
       }
     } catch (e) {
-      // Ignore transient network errors during live polling
+      const text = document.getElementById('live-status-text');
+      if (text) text.textContent = 'Reconnecting · last successful data remains visible';
+      const dot = document.getElementById('live-dot');
+      if (dot) { dot.classList.remove('on'); dot.classList.add('off'); }
     } finally {
       busy = false;
     }
@@ -1356,6 +1589,7 @@ _LIVE_SCRIPT = """
     const feedback = document.getElementById('custom-bench-feedback');
     const addBtn = document.getElementById('custom-bench-add-btn');
     if (feedback) feedback.textContent = '';
+    if (IS_DEMO) { if (feedback) feedback.textContent = 'Offline demo: comparison indices are synthetic. Load your export in the desktop app to fetch instruments.'; return; }
     if (!ticker) return;
 
     const benchContainer = document.getElementById('benchmark-chart-box');
@@ -1363,28 +1597,18 @@ _LIVE_SCRIPT = """
     if (!gd || !window.Plotly) return;
 
     if (addBtn) addBtn.disabled = true;
+    if (feedback) feedback.textContent = 'Fetching history and converting currencies...';
     try {
       let data = PRELOADED_BENCHMARKS[ticker] || null;
-      if (!data && window.pywebview && window.pywebview.api && window.pywebview.api.get_custom_benchmark) {
+      if (window.pywebview && window.pywebview.api && window.pywebview.api.get_custom_benchmark) {
         const res = await window.pywebview.api.get_custom_benchmark(ticker, CURRENCY);
         if (!res || res.error) {
-          throw new Error((res && res.error) || ('Nie udało się pobrać danych dla ' + ticker));
+          throw new Error((res && res.error) || ('Unable to fetch data for ' + ticker));
         }
         data = res;
       }
-      if (!data && window.location.protocol.startsWith('http')) {
-        const resp = await fetch(
-          '/api/benchmark?ticker=' + encodeURIComponent(ticker) + '&currency=' + encodeURIComponent(CURRENCY),
-          { headers: { 'Accept': 'application/json' }, cache: 'no-store' }
-        );
-        const json = await resp.json();
-        if (!resp.ok || json.error) {
-          throw new Error(json.error || ('Nie udało się pobrać danych dla ' + ticker));
-        }
-        data = json;
-      }
       if (!data) {
-        throw new Error('Brak danych dla symbolu ' + ticker);
+        throw new Error('Open this report in the desktop app to fetch ' + ticker);
       }
 
       if (addedCustomKeys.has(data.key)) {
@@ -1403,14 +1627,14 @@ _LIVE_SCRIPT = """
         x: data.x,
         y: data.y,
         name: data.trace_name,
-        mode: 'lines+markers',
-        marker: { size: 6, color: color, line: { width: 1, color: '#0f172a' } },
-        line: { color: color, width: 2.5, shape: 'spline', dash: 'solid' },
+        mode: 'lines',
+        line: { color: color, width: 2.5, shape: 'linear', dash: 'solid' },
         hovertemplate: '%{x|%b %Y}<br><b>%{y:.1f}%</b><extra></extra>',
         visible: true
       });
 
       addedCustomKeys.add(data.key);
+      if (feedback) feedback.textContent = 'Added ' + data.label;
       const group = document.getElementById('bench-toggle-group');
       if (group) {
         const btn = document.createElement('button');
@@ -1423,7 +1647,7 @@ _LIVE_SCRIPT = """
         bindBenchmarkToggleButton(btn);
       }
     } catch (err) {
-      if (feedback) feedback.textContent = err.message || 'Nie znaleziono instrumentu';
+      if (feedback) feedback.textContent = err.message || 'Instrument not found';
     } finally {
       if (addBtn) addBtn.disabled = false;
     }
@@ -1432,6 +1656,46 @@ _LIVE_SCRIPT = """
   document.addEventListener('DOMContentLoaded', function() {
     decorateTableSemantics(document);
     enableTableSorting(document);
+    document.querySelectorAll('.chart-controls').forEach(function(controls) {
+      controls.addEventListener('click', async function(event) {
+        const button = event.target.closest('button');
+        const gd = document.getElementById(controls.dataset.chartTarget);
+        if (!button || !gd || !window.Plotly) return;
+        if (button.hasAttribute('data-chart-export')) {
+          await Plotly.downloadImage(gd, {format:'png', filename:controls.dataset.chartTarget, scale:2});
+        } else if (button.hasAttribute('data-chart-reset')) {
+          await Plotly.relayout(gd, {'xaxis.autorange':true, 'yaxis.autorange':true});
+          controls.querySelectorAll('[data-chart-range]').forEach(b => b.classList.remove('active'));
+        } else if (button.hasAttribute('data-chart-range')) {
+          const dates = Array.from(gd.data[0].x || []).map(x => new Date(x)).filter(x => !isNaN(x));
+          if (!dates.length) return;
+          const last = new Date(Math.max(...dates));
+          const first = new Date(Math.min(...dates));
+          const period = button.dataset.chartRange;
+          let start = new Date(last);
+          if (period === 'all') {
+            start = first;
+          } else if (period === 'ytd') {
+            start = new Date(last.getFullYear(), 0, 1);
+          } else {
+            const count = parseInt(period, 10);
+            const unit = period.slice(-1);
+            if (unit === 'd' || unit === 'w') {
+              start.setDate(start.getDate() - count * (unit === 'w' ? 7 : 1));
+            } else {
+              const day = start.getDate();
+              start.setDate(1);
+              start.setMonth(start.getMonth() - count * (unit === 'y' ? 12 : 1));
+              const monthEnd = new Date(start.getFullYear(), start.getMonth() + 1, 0).getDate();
+              start.setDate(Math.min(day, monthEnd));
+            }
+          }
+          if (start < first) start = first;
+          await Plotly.relayout(gd, {'xaxis.range':[start, last], 'xaxis.autorange':false});
+          controls.querySelectorAll('[data-chart-range]').forEach(b => b.classList.toggle('active', b === button));
+        }
+      });
+    });
 
     // 4-Section Cloud Navigation
     document.querySelectorAll('.nav-cloud').forEach(function(cloud) {
@@ -1447,7 +1711,7 @@ _LIVE_SCRIPT = """
     }
 
     const hash = (window.location.hash || '').replace('#', '');
-    if (['podsumowanie', 'struktura', 'benchmarki', 'koszty'].includes(hash)) {
+    if (['overview', 'holdings', 'benchmarks', 'costs'].includes(hash)) {
       activateSection(hash);
     }
 
@@ -1474,6 +1738,18 @@ _LIVE_SCRIPT = """
     document.querySelectorAll('[data-bench-trace]').forEach(bindBenchmarkToggleButton);
 
     // Custom benchmark add controls
+    const exportBtn = document.getElementById('export-bench-csv');
+    if (exportBtn) exportBtn.addEventListener('click', function() {
+      const gd = document.getElementById('chart-benchmark');
+      const rows = [['Date', 'Instrument', 'ROI (%)']];
+      (gd.data || []).filter(t => t.visible !== false && t.visible !== 'legendonly').forEach(t => {
+        Array.from(t.x).forEach((x, i) => rows.push([x, t.name, t.y[i]]));
+      });
+      const csv = '\\ufeff' + rows.map(row => row.map(v => '"' + String(v).replace(/"/g, '""') + '"').join(';')).join('\\r\\n');
+      const url = URL.createObjectURL(new Blob([csv], {type: 'text/csv;charset=utf-8;'}));
+      const a = document.createElement('a'); a.href = url; a.download = 'comparison-' + CURRENCY + '.csv'; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
     const customInput = document.getElementById('custom-bench-input');
     const customAddBtn = document.getElementById('custom-bench-add-btn');
     const presetSelect = document.getElementById('preset-bench-select');
@@ -1506,9 +1782,11 @@ _LIVE_SCRIPT = """
       });
     });
 
-    // Currency switcher buttons (works in both Web and PyWebView desktop)
+    // Recalculation requires the desktop bridge; standalone HTML is a snapshot.
     document.querySelectorAll('[data-switch-currency]').forEach(function(btn) {
       btn.addEventListener('click', async function(e) {
+        e.preventDefault();
+        if (IS_DEMO) { e.preventDefault(); return; }
         const targetCurr = (btn.getAttribute('data-switch-currency') || '').toLowerCase();
         if (!targetCurr || targetCurr === CURRENCY) return;
         if (window.pywebview && window.pywebview.api && window.pywebview.api.switch_currency) {
@@ -1519,10 +1797,6 @@ _LIVE_SCRIPT = """
             window.location.reload();
           }
           return;
-        }
-        if (window.location.protocol.startsWith('http')) {
-          e.preventDefault();
-          window.location.href = '/?currency=' + encodeURIComponent(targetCurr) + (window.location.hash || '');
         }
       });
     });
@@ -1540,6 +1814,8 @@ _LIVE_SCRIPT = """
     setLiveButtonState();
     setTimeout(function() { tick(); }, 1500);
     setInterval(function() { tick(); }, POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', function() { if (!document.hidden) tick(); });
+    window.addEventListener('pywebviewready', function() { setLiveButtonState(); tick(); });
   });
 })();
 </script>
@@ -1547,8 +1823,7 @@ _LIVE_SCRIPT = """
 
 
 def render_html_report(data: ReportData) -> str:
-    now_ts = _now_warsaw()
-    currency_label = data.measures.currency
+    now_ts = _now_utc()
     generated = now_ts.strftime("%Y-%m-%d %H:%M:%S")
     as_of_with_time = f"{data.measures.as_of} ({now_ts.strftime('%H:%M:%S')})"
 
@@ -1564,17 +1839,19 @@ def render_html_report(data: ReportData) -> str:
     )
 
     # Expanded catalog of indices, ETFs, commodities/crypto, and US/Europe/GPW companies
-    portfolio_syms = [str(s) for s in data.company_pnl["symbol"].tolist()] if not data.company_pnl.empty else []
+    portfolio_syms = (
+        [str(s) for s in data.company_pnl["symbol"].tolist()] if not data.company_pnl.empty else []
+    )
 
     catalog_indices = [
-        ("^GDAXI", "DAX 40 (Niemcy)"),
-        ("WIG20.WA", "WIG20 (GPW)"),
-        ("^DJI", "Dow Jones 30 (USA)"),
-        ("^RUT", "Russell 2000 (Małe spółki USA)"),
-        ("^STOXX50E", "Euro Stoxx 50 (Europa)"),
+        ("^GDAXI", "DAX 40 (Germany)"),
+        ("WIG20.WA", "WIG20 (Warsaw)"),
+        ("^DJI", "Dow Jones 30 (US)"),
+        ("^RUT", "Russell 2000 (US small caps)"),
+        ("^STOXX50E", "Euro Stoxx 50 (Europe)"),
         ("^FTSE", "FTSE 100 (UK)"),
-        ("^N225", "Nikkei 225 (Japonia)"),
-        ("^HSI", "Hang Seng (Hongkong)"),
+        ("^N225", "Nikkei 225 (Japan)"),
+        ("^HSI", "Hang Seng (Hong Kong)"),
     ]
     catalog_etfs_commodities = [
         ("SPY", "SPDR S&P 500 ETF"),
@@ -1587,9 +1864,9 @@ def render_html_report(data: ReportData) -> str:
         ("XLF", "Financial Sector SPDR ETF"),
         ("XLV", "Health Care Sector SPDR ETF"),
         ("XLE", "Energy Sector SPDR ETF"),
-        ("TLT", "Obligacje USA 20Y+ (iShares TLT)"),
-        ("GLD", "Złoto ETF (SPDR Gold)"),
-        ("SLV", "Srebro ETF (iShares Silver)"),
+        ("TLT", "US Treasury 20Y+ ETF (TLT)"),
+        ("GLD", "Gold ETF (SPDR Gold)"),
+        ("SLV", "Silver ETF (iShares Silver)"),
         ("BTC-USD", "Bitcoin (BTC/USD)"),
         ("ETH-USD", "Ethereum (ETH/USD)"),
     ]
@@ -1625,12 +1902,14 @@ def render_html_report(data: ReportData) -> str:
         if sym not in seen_tickers:
             seen_tickers.add(sym)
             datalist_options.append(
-                f"<option value='{html_lib.escape(sym)}'>Spółka z portfela ({html_lib.escape(sym)})</option>"
+                f"<option value='{html_lib.escape(sym)}'>Portfolio holding ({html_lib.escape(sym)})</option>"
             )
     for sym, desc in catalog_indices + catalog_etfs_commodities + catalog_stocks:
         if sym not in seen_tickers:
             seen_tickers.add(sym)
-            datalist_options.append(f"<option value='{html_lib.escape(sym)}'>{html_lib.escape(desc)}</option>")
+            datalist_options.append(
+                f"<option value='{html_lib.escape(sym)}'>{html_lib.escape(desc)}</option>"
+            )
     datalist_html = "".join(datalist_options)
 
     def _optgroup_html(title: str, items: list[tuple[str, str]]) -> str:
@@ -1640,14 +1919,14 @@ def render_html_report(data: ReportData) -> str:
         )
         return f"<optgroup label='{html_lib.escape(title)}'>{opts}</optgroup>"
 
-    portfolio_opt_items = [(sym, f"Spółka z portfela {sym}") for sym in portfolio_syms]
+    portfolio_opt_items = [(sym, f"Portfolio holding {sym}") for sym in portfolio_syms]
     preset_select_html = (
-        "<select id='preset-bench-select' class='preset-select' aria-label='Wybierz instrument z listy'>"
-        "<option value=''>Wybierz indeks / ETF / spółkę z listy…</option>"
-        + (_optgroup_html("Twój portfel", portfolio_opt_items) if portfolio_opt_items else "")
-        + _optgroup_html("Indeksy giełdowe", catalog_indices)
-        + _optgroup_html("ETF-y, obligacje, surowce i krypto", catalog_etfs_commodities)
-        + _optgroup_html("Popularne spółki (USA / Europa / GPW)", catalog_stocks)
+        "<select id='preset-bench-select' class='preset-select' aria-label='Choose an instrument'>"
+        "<option value=''>Choose an index, ETF, or stock...</option>"
+        + (_optgroup_html("Your portfolio", portfolio_opt_items) if portfolio_opt_items else "")
+        + _optgroup_html("Market indices", catalog_indices)
+        + _optgroup_html("ETFs, bonds, commodities and crypto", catalog_etfs_commodities)
+        + _optgroup_html("Popular stocks (US / Europe / Warsaw)", catalog_stocks)
         + "</select>"
     )
 
@@ -1657,34 +1936,31 @@ def render_html_report(data: ReportData) -> str:
         for c in ("pln", "usd", "eur")
     )
 
-    # Panel 1: Podsumowanie (simplified, deduplicated, no dividends, with Alfa & Beta in Risk)
-    panel_podsumowanie = (
-        "<section id='podsumowanie' class='tab-panel active' role='tabpanel'>"
-        "<div class='panel-block'>"
-        "<h2>Podsumowanie portfela</h2>"
-        "<p class='section-desc'>Kluczowe wskaźniki wyceny, wpłat oraz stóp zwrotu (ROI, MWR/XIRR, TWR).</p>"
+    # Panel 1: Overview with alpha and beta in the risk section.
+    panel_overview = (
+        "<section id='overview' class='tab-panel active' role='tabpanel'>"
+        "<div class='panel-block' id='overview-kpis'>"
+        "<h2>Portfolio overview</h2>"
         f"<div id='live-kpi'>{_kpi_section(data)}</div>"
         "</div>"
-        "<div class='panel-block'>"
-        "<h2>Wartość portfela w czasie</h2>"
-        "<p class='section-desc'>Wartość portfela na tle skumulowanych wpłat. Pionowe linie oznaczają dni wpłat.</p>"
-        f"{_chart(plot_nav_with_deposits(data.nav, data.currency))}"
+        "<div class='panel-block' id='nav-history'>"
+        f"{_chart(plot_nav_with_deposits(data.nav, data.currency), plot_id='chart-nav')}"
+        f"{_chart(plot_drawdown(data.twr_returns, data.currency), plot_id='chart-drawdown')}"
         "</div>"
-        "<div class='panel-block'>"
-        "<h2>Ryzyko i miesięczne stopy zwrotu TWR</h2>"
-        "<p class='section-desc'>Najważniejsze miary zmienności, wskaźniki Alfa i Beta oraz miesięczna mapa stóp zwrotu TWR.</p>"
+        "<div class='panel-block' id='risk-monthly'>"
+        "<h2>Risk and monthly TWR returns</h2>"
+        "<p class='section-desc'>Volatility, alpha, beta, and a monthly return heatmap.</p>"
         f"<div id='live-risk'>{_risk_cards_html(data.risk)}</div>"
-        f"{_chart(plot_monthly_returns_heatmap(data.twr_returns, data.currency))}"
+        f"{_chart(plot_monthly_returns_heatmap(data.twr_returns, data.currency), plot_id='chart-monthly')}"
         "</div>"
         "</section>"
     )
 
-    # Panel 2: Benchmarki (default 4 indices + single clean selector & custom search)
-    panel_benchmarki = (
-        "<section id='benchmarki' class='tab-panel' role='tabpanel'>"
+    # Panel 2: Benchmarks (default 4 indices + single clean selector & custom search)
+    panel_benchmarks = (
+        "<section id='benchmarks' class='tab-panel' role='tabpanel'>"
         "<div class='panel-block'>"
-        "<h2>Porównanie portfela z indeksami, ETF-ami i spółkami</h2>"
-        "<p class='section-desc'>Symulacja zakupu wybranego indeksu, funduszu ETF lub spółki za każdą wpłatę w dniu wpłaty (te same kwoty i momenty wpłat).</p>"
+        "<h2>Compare portfolio performance</h2>"
         "<div class='interactive-toolbar'>"
         "<div class='filter-group' id='bench-toggle-group'>"
         f"{bench_buttons}"
@@ -1692,65 +1968,68 @@ def render_html_report(data: ReportData) -> str:
         "<div class='custom-bench-form'>"
         f"{preset_select_html}"
         "<input type='text' id='custom-bench-input' list='custom-bench-list' class='search-input' "
-        "placeholder='Lub wpisz dowolny ticker (np. AAPL, SMH, XTB.WA)…'>"
+        "placeholder='Or enter a ticker (e.g. AAPL, SMH, XTB.WA)...'>"
         f"<datalist id='custom-bench-list'>{datalist_html}</datalist>"
-        "<button type='button' id='custom-bench-add-btn' class='bench-add-btn'>+ Dodaj do wykresu</button>"
-        "<span id='custom-bench-feedback' class='bench-feedback'></span>"
+        "<button type='button' id='custom-bench-add-btn' class='bench-add-btn'>+ Add comparison</button>"
+        "<button type='button' id='export-bench-csv' class='filter-btn'>Download comparison CSV</button>"
+        "<span id='custom-bench-feedback' class='bench-feedback' role='status' aria-live='polite'></span>"
         "</div>"
         "</div>"
-        f"<div id='benchmark-chart-box'>{_chart(benchmark_fig)}</div>"
+        f"<div id='benchmark-chart-box'>{_chart(benchmark_fig, plot_id='chart-benchmark')}</div>"
         "</div>"
         "</section>"
     )
 
-    # Panel 3: Struktura spółek (Company P&L chart + table + allocation charts, WITHOUT open positions table)
-    panel_struktura = (
-        "<section id='struktura' class='tab-panel' role='tabpanel'>"
+    # Panel 3: Holdings (Company P&L chart + table + allocation charts, WITHOUT open positions table)
+    panel_holdings = (
+        "<section id='holdings' class='tab-panel' role='tabpanel'>"
         "<div class='panel-block'>"
-        "<h2>Zyski i straty na spółkach (od największego zysku do największej straty)</h2>"
-        "<p class='section-desc'>Ranking wszystkich spółek z historii rachunków (zarówno otwartych, jak i zamkniętych pozycji) "
-        "od największego łącznego zysku do największej straty.</p>"
-        f"{_chart(plot_company_pnl(data.company_pnl, data.currency))}"
+        "<h2>Company profit and loss (ranked by total profit and loss)</h2>"
+        "<p class='section-desc'>Open and closed positions ranked "
+        "from highest profit to largest loss.</p>"
+        f"{_chart(plot_company_pnl(data.company_pnl, data.currency), plot_id='chart-pnl')}"
         "<div class='interactive-toolbar'>"
         "<div class='filter-group'>"
-        "<button type='button' class='filter-btn active' data-company-filter='all'>Wszystkie spółki</button>"
-        "<button type='button' class='filter-btn' data-company-filter='gain'>Tylko zyskowne (+)</button>"
-        "<button type='button' class='filter-btn' data-company-filter='loss'>Tylko stratne (−)</button>"
-        "<button type='button' class='filter-btn' data-company-filter='open'>Otwarte pozycje</button>"
-        "<button type='button' class='filter-btn' data-company-filter='closed'>Zamknięte pozycje</button>"
+        "<button type='button' class='filter-btn active' data-company-filter='all'>All companies</button>"
+        "<button type='button' class='filter-btn' data-company-filter='gain'>Profitable (+)</button>"
+        "<button type='button' class='filter-btn' data-company-filter='loss'>Loss-making (−)</button>"
+        "<button type='button' class='filter-btn' data-company-filter='open'>Open positions</button>"
+        "<button type='button' class='filter-btn' data-company-filter='closed'>Closed positions</button>"
         "</div>"
-        "<input type='search' id='company-search-input' class='search-input' placeholder='Szukaj spółki po symbolu (np. AMD, NVDA)…'>"
+        "<input type='search' id='company-search-input' class='search-input' placeholder='Search by ticker (e.g. AMD, NVDA)...'>"
         "</div>"
         f"<div id='live-company-pnl'>{_table_html(format_company_pnl_table(data.company_pnl, data.currency))}</div>"
         "</div>"
         "<div class='panel-block'>"
-        "<h2>Alokacja portfela</h2>"
-        "<p class='section-desc'>Udział poszczególnych instrumentów, walut oraz sektorów w bieżącej wartości portfela.</p>"
-        f"{_chart(plot_holdings_allocation(data.positions))}"
+        "<h2>Asset allocation</h2>"
+        "<p class='section-desc'>Holdings, currencies, and sectors as shares of invested assets; cash excluded.</p>"
+        f"{_chart(plot_holdings_allocation(data.positions), plot_id='chart-holdings')}"
         "<div class='chart-grid'>"
-        f"{_chart(plot_currency_allocation(data.positions))}"
-        f"{_chart(plot_sector_allocation(data.sector_alloc))}"
+        f"{_chart(plot_currency_allocation(data.positions), plot_id='chart-currency')}"
+        f"{_chart(plot_sector_allocation(data.sector_alloc), plot_id='chart-sector')}"
         "</div>"
         "</div>"
         "</section>"
     )
 
-    # Panel 4: Waluty, koszty i dywidendy (FX conversion stats + FX attribution + Dividends & Interest)
-    panel_koszty = (
-        "<section id='koszty' class='tab-panel' role='tabpanel'>"
+    # Panel 4: FX, costs and income (FX conversion stats + FX attribution + Dividends & Interest)
+    panel_costs = (
+        "<section id='costs' class='tab-panel' role='tabpanel'>"
         "<div class='panel-block'>"
-        "<h2>Koszty przewalutowań XTB</h2>"
-        "<p class='section-desc'>Łączny koszt przewalutowań PLN → USD/EUR oraz prowizja pobrana przez XTB (0,5%).</p>"
+        "<h2>Estimated FX conversion costs</h2>"
+        "<p class='section-desc'>Assumes a 0.5% fee on external currency conversions. The export does not verify "
+        "the actual fee. Costs already reflected in NAV are not deducted again.</p>"
         f"<div id='live-conversion'>{_conversion_summary_section(data.conversion_stats, data.conversion_losses)}</div>"
         "</div>"
         "<div class='panel-block'>"
-        "<h2>Atrybucja walutowa: inwestycje vs waluta</h2>"
-        "<p class='section-desc'>Rozbicie wyniku w PLN na zysk wypracowany przez same inwestycje oraz wpływ zmian kursów walut.</p>"
+        "<h2>FX attribution: investment and currency</h2>"
+        "<p class='section-desc'>PLN gains split between investment performance and currency exposure.</p>"
         f"<div id='live-attribution'>{_attribution_section(data.attribution)}</div>"
+        f"{_chart(plot_fx_attribution_series(data.attribution), plot_id='chart-fx')}"
         "</div>"
         "<div class='panel-block'>"
-        "<h2>Dywidendy i odsetki</h2>"
-        "<p class='section-desc'>Przychody gotówkowe portfela (dywidendy, odsetki od wolnych środków oraz podatki u źródła) w podziale na waluty rachunków.</p>"
+        "<h2>Dividends and interest</h2>"
+        "<p class='section-desc'>Dividends, interest, and withholding taxes by account currency.</p>"
         f"<div id='live-income'>{_income_table(data.income)}</div>"
         "</div>"
         "</section>"
@@ -1759,93 +2038,99 @@ def render_html_report(data: ReportData) -> str:
     account_ids = ", ".join(account.account_id for account in data.accounts)
     live_script = (
         _LIVE_SCRIPT.replace("__CURRENCY_JSON__", json.dumps(data.currency))
+        .replace("__DEMO_JSON__", json.dumps(data.is_demo))
         .replace("__CUSTOM_BENCHMARKS_JSON__", json.dumps(data.custom_benchmarks))
     )
 
+    data_notice = (
+        "Synthetic demo: fictional trades, quotes, FX, and indices. No network access."
+        if data.is_demo
+        else "Prices: Yahoo Finance. FX: NBP with Yahoo fallback. Quotes may be delayed."
+    )
+
     return f"""<!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Raport portfela XTB – {data.measures.as_of}</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<script src="https://cdn.plot.ly/plotly-2.35.2.min.js" charset="utf-8"></script>
-<style>{_CSS}</style>
+<title>XTB Portfolio Report – {data.measures.as_of}</title>
+<script>{_plotly_bundle()}</script>
+<style>{_CSS}{_DESIGN_CSS}</style>
 </head>
 <body>
 <div class="container">
+<p class="section-desc" id="data-source-notice">{data_notice}</p>
 <header class="hero">
   <div class="hero-title-group">
-    <h1>Raport portfela XTB</h1>
+    <h1>XTB Portfolio Report</h1>
     <div class="hero-meta">
-      <span>Konta: <b>{account_ids}</b></span>
+      <span>Accounts: <b>{account_ids}</b></span>
       <span class="meta-sep" aria-hidden="true">·</span>
-      <span>Stan na: <b id="live-as-of">{as_of_with_time}</b></span>
+      <span>As of: <b id="live-as-of">{as_of_with_time}</b></span>
       <span class="meta-sep" aria-hidden="true">·</span>
-      <span>Okres: <b id="live-period-days">{data.measures.period_days} dni</b></span>
+      <span>Period: <b id="live-period-days">{data.measures.period_days} days</b></span>
     </div>
   </div>
   <div class="hero-actions">
-    <div class="currency-switcher" role="group" aria-label="Waluta raportu">
-      <span class="currency-switch-label">Waluta:</span>
+    <div class="currency-switcher" role="group" aria-label="Report currency">
+      <span class="currency-switch-label">Currency:</span>
       {curr_buttons_html}
     </div>
-    <button type="button" class="live-trigger is-on" id="live-market-badge" title="Kliknij, aby włączyć lub wyłączyć odświeżanie statystyk na żywo (zielona kropka = WŁĄCZONE, czerwona kropka = WYŁĄCZONE).">
+    <button type="button" class="live-trigger is-on" id="live-market-badge" title="Toggle live polling. Provider quotes may be delayed.">
       <span class="live-dot on" id="live-dot"></span>
-      <span id="live-status-text">Statystyki LIVE: WŁĄCZONE</span>
+      <span id="live-status-text">Live updates: ON</span>
     </button>
   </div>
 </header>
 
 <div class="section-switcher-wrap">
   <div class="switcher-header">
-    <span class="switcher-title">Wybierz sekcję raportu</span>
-    <button type="button" class="view-mode-btn" id="btn-show-all">Pokaż wszystkie sekcje naraz</button>
+    <span class="switcher-title">Explore your portfolio</span>
+    <button type="button" class="view-mode-btn" id="btn-show-all">Show all sections</button>
   </div>
-  <div class="nav-clouds" role="tablist" aria-label="Sekcje raportu">
-    <button type="button" class="nav-cloud active" data-target="podsumowanie" role="tab" aria-selected="true">
+  <div class="nav-clouds" role="tablist" aria-label="Report sections">
+    <button type="button" class="nav-cloud active" data-target="overview" role="tab" aria-selected="true">
       <div class="cloud-top">
         <span class="cloud-step">01</span>
         <span class="cloud-arrow">→</span>
       </div>
-      <div class="cloud-title">Podsumowanie</div>
+      <div class="cloud-title">Overview</div>
     </button>
 
-    <button type="button" class="nav-cloud" data-target="benchmarki" role="tab" aria-selected="false">
+    <button type="button" class="nav-cloud" data-target="benchmarks" role="tab" aria-selected="false">
       <div class="cloud-top">
         <span class="cloud-step">02</span>
         <span class="cloud-arrow">→</span>
       </div>
-      <div class="cloud-title">Benchmarki</div>
+      <div class="cloud-title">Benchmarks</div>
     </button>
 
-    <button type="button" class="nav-cloud" data-target="struktura" role="tab" aria-selected="false">
+    <button type="button" class="nav-cloud" data-target="holdings" role="tab" aria-selected="false">
       <div class="cloud-top">
         <span class="cloud-step">03</span>
         <span class="cloud-arrow">→</span>
       </div>
-      <div class="cloud-title">Struktura spółek</div>
+      <div class="cloud-title">Holdings</div>
     </button>
 
-    <button type="button" class="nav-cloud" data-target="koszty" role="tab" aria-selected="false">
+    <button type="button" class="nav-cloud" data-target="costs" role="tab" aria-selected="false">
       <div class="cloud-top">
         <span class="cloud-step">04</span>
         <span class="cloud-arrow">→</span>
       </div>
-      <div class="cloud-title">Waluty, koszty i dywidendy</div>
+      <div class="cloud-title">FX, costs and income</div>
     </button>
   </div>
 </div>
 
-{panel_podsumowanie}
-{panel_benchmarki}
-{panel_struktura}
-{panel_koszty}
+{panel_overview}
+{panel_benchmarks}
+{panel_holdings}
+{panel_costs}
 
 <footer>
-Wygenerowano <span id="live-generated">{generated}</span> przez xtb_portfolio_analyzer. Ceny: Yahoo Finance, kursy walut: NBP (tabela A),
-MSCI ACWI: ETF iShares ACWI, SOX: Philadelphia Semiconductor Index (^SOX). Raport ma charakter informacyjny i nie stanowi porady inwestycyjnej.
+Generated <span id="live-generated">{generated}</span> UTC by XTB Portfolio Analyzer. {data_notice}
+For educational analysis; not investment or tax advice.
 </footer>
 </div>
 {live_script}
@@ -1864,7 +2149,8 @@ def generate_report(
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = True,
-    on_progress=None,
+    on_progress: Callable[[float, str], None] | None = None,
+    market_data: MarketData | None = None,
 ) -> Path:
     """Load XTB CSV exports, compute all analytics and write output/report.html."""
     data_dir = Path(data_dir)
@@ -1884,11 +2170,10 @@ def generate_report(
         from xtb_analyzer.parser import describe_export_discovery
 
         raise FileNotFoundError(
-            f"Brak eksportów XTB w {data_dir.resolve()}.\n"
-            + describe_export_discovery(data_dir)
+            f"No XTB exports found in {data_dir.resolve()}.\n" + describe_export_discovery(data_dir)
         )
 
-    progress(0.12, "Czytam historię kont…")
+    progress(0.12, "Reading account histories...")
     accounts = load_accounts(csv_files)
     data = collect_report_data(
         accounts,
@@ -1896,6 +2181,7 @@ def generate_report(
         use_cache=use_cache,
         refresh_latest=refresh_latest,
         on_progress=on_progress,
+        market_data=market_data,
     )
 
     output_dir.mkdir(parents=True, exist_ok=True)

@@ -11,7 +11,7 @@ def _sample_nav() -> pd.DataFrame:
         {
             "nav_pln": nav,
             "deposits_pln": deposits,
-            "return_pln": [v / d - 1 for v, d in zip(nav, deposits)],
+            "return_pln": [v / d - 1 for v, d in zip(nav, deposits, strict=False)],
         },
         index=dates,
     )
@@ -70,7 +70,7 @@ def test_plot_company_pnl_sorted_largest_profit_to_largest_loss():
         [
             {
                 "symbol": "AMD.US",
-                "status": "Zamknięta",
+                "status": "Closed",
                 "currency": "USD",
                 "invested_local": 1000.0,
                 "total_pnl_local": 200.00,
@@ -81,7 +81,7 @@ def test_plot_company_pnl_sorted_largest_profit_to_largest_loss():
             },
             {
                 "symbol": "NOW.US",
-                "status": "Otwarta",
+                "status": "Open",
                 "currency": "USD",
                 "invested_local": 520.0,
                 "total_pnl_local": 50.00,
@@ -92,7 +92,7 @@ def test_plot_company_pnl_sorted_largest_profit_to_largest_loss():
             },
             {
                 "symbol": "UBER.US",
-                "status": "Otwarta",
+                "status": "Open",
                 "currency": "USD",
                 "invested_local": 1100.0,
                 "total_pnl_local": -100.00,
@@ -110,7 +110,7 @@ def test_plot_company_pnl_sorted_largest_profit_to_largest_loss():
 
     table = format_company_pnl_table(company_pnl, "pln")
     assert list(table["Symbol"]) == ["AMD.US", "NOW.US", "UBER.US"]
-    assert list(table["Pozycja"]) == ["#1", "#2", "#3"]
+    assert list(table["Rank"]) == ["#1", "#2", "#3"]
 
 
 def test_chart_titles_centered_and_risk_has_alpha_beta():
@@ -123,7 +123,7 @@ def test_chart_titles_centered_and_risk_has_alpha_beta():
     assert fig.layout.title.xanchor == "center"
 
     risk = RiskStats(
-        volatility_annual=10000.00,
+        volatility_annual=0.18,
         sharpe=1.42,
         sortino=1.95,
         max_drawdown=-0.08,
@@ -140,10 +140,7 @@ def test_chart_titles_centered_and_risk_has_alpha_beta():
         benchmarks=[BenchmarkRelation("S&P 500 TR", 1.12, 0.064, 0.82, 0.15)],
     )
     html = _risk_cards_html(risk)
-    assert "Alfa (roczna)" in html
+    assert "Annualized alpha" in html
     assert "Beta" in html
-    assert "+6,40%" in html
-    assert "1,12" in html
-
-
-
+    assert "+6.40%" in html
+    assert "1.12" in html

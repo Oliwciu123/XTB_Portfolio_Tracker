@@ -1,5 +1,15 @@
 data/
 output/
+.env
+.env.*
+!.env.example
+.vscode/
+.ruff_cache/
+.DS_Store
+*.log
+*.bundle
+*.pem
+*.key
 .venv/
 .venv-build/
 .cursor/
@@ -9,6 +19,7 @@ __pycache__/
 .ipynb_checkpoints/
 build/
 dist/
+tmp/
 *.egg-info/
 packaging/*.toc
 packaging/*.pkg

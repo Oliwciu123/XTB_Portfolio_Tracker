@@ -15,7 +15,11 @@ FIXTURES = Path(__file__).parent / "fixtures"
 
 def _history_zip(tmp_path: Path) -> Path:
     usd = FIXTURES / "xtb_currency_prefix_cash_ops.csv"
-    eur = usd.read_text(encoding="utf-8").replace("11111111", "22222222").replace("PLN to USD", "PLN to EUR")
+    eur = (
+        usd.read_text(encoding="utf-8")
+        .replace("11111111", "22222222")
+        .replace("PLN to USD", "PLN to EUR")
+    )
     pln = (
         usd.read_text(encoding="utf-8")
         .replace("11111111", "33333333")
@@ -33,7 +37,9 @@ def _history_zip(tmp_path: Path) -> Path:
 def test_zip_bytes_run_existing_report_pipeline(tmp_path: Path, monkeypatch):
     seen: dict[str, object] = {}
 
-    def fake_generate_report(data_dir, output_dir, currency="pln", use_cache=True, refresh_latest=True, on_progress=None):
+    def fake_generate_report(
+        data_dir, output_dir, currency="pln", use_cache=True, refresh_latest=True, on_progress=None
+    ):
         files = discover_export_files(data_dir)
         seen["files"] = sorted(path.name for path in files)
         seen["currencies"] = sorted(path.name.split("_", 1)[0] for path in files)
@@ -42,7 +48,9 @@ def test_zip_bytes_run_existing_report_pipeline(tmp_path: Path, monkeypatch):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         report = output_dir / "report.html"
-        report.write_text("<html><h1>Raport portfela XTB</h1><h2>Podsumowanie</h2></html>", encoding="utf-8")
+        report.write_text(
+            "<html><h1>XTB Portfolio Report</h1><h2>Overview</h2></html>", encoding="utf-8"
+        )
         return report
 
     monkeypatch.setattr("xtb_analyzer.session.generate_report", fake_generate_report)
@@ -53,7 +61,7 @@ def test_zip_bytes_run_existing_report_pipeline(tmp_path: Path, monkeypatch):
         currency="pln",
         refresh_latest=False,
     )
-    assert "Raport portfela XTB" in report.read_text(encoding="utf-8")
+    assert "XTB Portfolio Report" in report.read_text(encoding="utf-8")
     assert seen["currencies"] == ["EUR", "PLN", "USD"]
     assert seen["currency"] == "pln"
     assert seen["refresh_latest"] is False
@@ -63,7 +71,9 @@ def test_windows_drop_fills_a_zip_path():
     from xtb_analyzer.desktop import parse_dropped_paths
 
     assert parse_dropped_paths("{C:/Users/me/history.zip}") == ["C:/Users/me/history.zip"]
-    assert parse_dropped_paths("{C:\\Users\\me\\a.zip} {C:\\Users\\me\\notes.txt}") == ["C:\\Users\\me\\a.zip"]
+    assert parse_dropped_paths("{C:\\Users\\me\\a.zip} {C:\\Users\\me\\notes.txt}") == [
+        "C:\\Users\\me\\a.zip"
+    ]
 
 
 def test_window_has_progress_and_no_offline_switch(tmp_path: Path, monkeypatch):
@@ -90,13 +100,11 @@ def test_window_has_progress_and_no_offline_switch(tmp_path: Path, monkeypatch):
 
     walk(app.root)
     blob = " ".join(texts)
-    assert "przyszłości" not in blob
-    assert "bieżących notowań" not in blob
     assert "USD/EUR" not in blob
     assert "XTB PORTFOLIO ANALYZER" not in blob
-    assert "Analizator portfela XTB" in blob
-    assert "Wczytaj historię konta w formacie .zip, aby wygenerować raport." in blob
-    assert "Upuść archiwum ZIP tutaj" in blob
+    assert "XTB Portfolio Analyzer" in blob
+    assert "Import your account history as a ZIP file to generate a report." in blob
+    assert "Drop your history ZIP here" in blob
     assert app.progress is not None
     monkeypatch.setattr(app, "_start", lambda path: None)
     app._choose(str(tmp_path / "history.zip"))
@@ -117,11 +125,13 @@ def test_window_load_zip_without_opening_report(tmp_path: Path, monkeypatch):
         pytest.skip("no display")
     root.withdraw()
 
-    def fake_generate_report(data_dir, output_dir, currency="pln", use_cache=True, refresh_latest=True, on_progress=None):
+    def fake_generate_report(
+        data_dir, output_dir, currency="pln", use_cache=True, refresh_latest=True, on_progress=None
+    ):
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
         report = output_dir / "report.html"
-        report.write_text("<html><h2>Podsumowanie</h2></html>", encoding="utf-8")
+        report.write_text("<html><h2>Overview</h2></html>", encoding="utf-8")
         return report
 
     monkeypatch.setattr("xtb_analyzer.session.generate_report", fake_generate_report)

@@ -1,11 +1,52 @@
 from __future__ import annotations
 
+from functools import lru_cache
+
 import pandas as pd
+import yfinance as yf
 
 from xtb_analyzer.flows import extract_deposits
 from xtb_analyzer.fx import convert_value, fetch_fx_rates
 from xtb_analyzer.models import Account
 from xtb_analyzer.prices import fetch_benchmarks
+
+
+@lru_cache(maxsize=256)
+def instrument_currency(ticker: str) -> str:
+    if ticker in BENCHMARK_TICKERS.values():
+        return "USD"
+    quote = yf.Ticker(ticker).fast_info["currency"]
+    if not quote:
+        raise ValueError(f"Unable to determine quote currency for {ticker}.")
+    return str(quote)
+
+
+def benchmark_in_currency(
+    index: pd.Series, quote_currency: str, currency: str, fx: pd.DataFrame
+) -> pd.Series:
+    """Convert levels before simulating units, preserving currency exposure."""
+    target = currency.upper()
+    if index.empty:
+        return index
+    scale = 0.01 if quote_currency in ("GBp", "GBX", "ZAc") else 1.0
+    source = {"GBp": "GBP", "GBX": "GBP", "ZAc": "ZAR"}.get(quote_currency, quote_currency.upper())
+    levels = index.astype(float) * scale
+    if source == target:
+        return levels
+    aligned = fx.reindex(levels.index, method="ffill")
+    if source in ("USD", "EUR", "PLN"):
+        source_pln = aligned[f"{source}PLN"] if source != "PLN" else 1.0
+    else:
+        pair = source + "PLN=X"
+        rates = fetch_benchmarks(
+            [pair],
+            start=(levels.index[0] - pd.Timedelta(days=7)).date().isoformat(),
+            end=(levels.index[-1] + pd.Timedelta(days=1)).date().isoformat(),
+        )
+        source_pln = rates.get(pair, pd.Series(dtype=float)).reindex(levels.index, method="ffill")
+    target_pln = aligned[f"{target}PLN"] if target != "PLN" else 1.0
+    return levels * source_pln / target_pln
+
 
 SP500_TR_TICKER = "^SP500TR"
 NASDAQ100_TICKER = "^NDX"
@@ -38,11 +79,15 @@ def _simulate_deposit_benchmark(
         return pd.Series(dtype=float, name=f"{series_name}_{currency}")
 
     index = index.reindex(calendar, method="ffill")
+    if index.isna().any() or (index <= 0).any():
+        return pd.Series(dtype=float, name=f"{series_name}_{currency}")
     units = 0.0
     values: list[float] = []
     deposit_idx = 0
 
-    while deposit_idx < len(deposits) and deposits[deposit_idx].timestamp.date() < calendar[0].date():
+    while (
+        deposit_idx < len(deposits) and deposits[deposit_idx].timestamp.date() < calendar[0].date()
+    ):
         deposit_idx += 1
 
     for day in calendar:
@@ -54,11 +99,15 @@ def _simulate_deposit_benchmark(
                 deposit_idx += 1
                 continue
             fx_row = fx.loc[:dep_day].iloc[-1] if not fx.empty else pd.Series(dtype=float)
-            amount = convert_value(
-                float(deposit.amount_foreign),
-                deposit.currency,
-                currency.upper(),
-                fx_row,
+            amount = (
+                float(deposit.pln_spent)
+                if currency == "pln"
+                else convert_value(
+                    float(deposit.amount_foreign),
+                    deposit.currency,
+                    currency.upper(),
+                    fx_row,
+                )
             )
             units += amount / price
             deposit_idx += 1
@@ -79,9 +128,10 @@ def build_deposit_benchmark(
     refresh_latest: bool = False,
     index_series: pd.Series | None = None,
     fx: pd.DataFrame | None = None,
+    quote_currency: str = "USD",
 ) -> pd.Series:
     """Benchmark: buy index with each deposit at the moment of deposit."""
-    deposits = extract_deposits(accounts)
+    deposits = extract_deposits(accounts, fx=fx)
     if not deposits or calendar.empty:
         return pd.Series(dtype=float, name=f"{series_name}_{currency.lower()}")
 
@@ -90,7 +140,7 @@ def build_deposit_benchmark(
     if calendar.empty:
         return pd.Series(dtype=float, name=f"{series_name}_{currency.lower()}")
 
-    start = first_deposit.date().isoformat()
+    start = (first_deposit - pd.Timedelta(days=7)).date().isoformat()
     end = (calendar[-1] + pd.Timedelta(days=1)).date().isoformat()
 
     if index_series is None:
@@ -110,7 +160,7 @@ def build_deposit_benchmark(
         accounts,
         calendar,
         currency,
-        index_series,
+        benchmark_in_currency(index_series, quote_currency, currency, fx),
         series_name,
         fx,
         deposits,
@@ -123,12 +173,14 @@ def build_benchmark_suite(
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = False,
+    fx: pd.DataFrame | None = None,
+    indices: dict[str, pd.Series] | None = None,
 ) -> dict[str, pd.Series]:
     """Deposit-matched benchmarks for all configured indices in one batch fetch.
 
     Returns a dict keyed by ``BENCHMARK_TICKERS`` keys (sp500, nasdaq100, acwi).
     """
-    deposits = extract_deposits(accounts)
+    deposits = extract_deposits(accounts, fx=fx)
     if not deposits or calendar.empty:
         return {key: pd.Series(dtype=float) for key in BENCHMARK_TICKERS}
 
@@ -137,23 +189,25 @@ def build_benchmark_suite(
     if calendar.empty:
         return {key: pd.Series(dtype=float) for key in BENCHMARK_TICKERS}
 
-    start = first_deposit.date().isoformat()
+    start = (first_deposit - pd.Timedelta(days=7)).date().isoformat()
     end = (calendar[-1] + pd.Timedelta(days=1)).date().isoformat()
-    indices = fetch_benchmarks(
-        list(BENCHMARK_TICKERS.values()),
-        start=start,
-        end=end,
-        use_cache=use_cache,
-        refresh_latest=refresh_latest,
-    )
-    fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache)
+    if indices is None:
+        indices = fetch_benchmarks(
+            list(BENCHMARK_TICKERS.values()),
+            start=start,
+            end=end,
+            use_cache=use_cache,
+            refresh_latest=refresh_latest,
+        )
+    if fx is None:
+        fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache)
 
     return {
         key: _simulate_deposit_benchmark(
             accounts,
             calendar,
             currency,
-            indices.get(ticker, pd.Series(dtype=float)),
+            benchmark_in_currency(indices.get(ticker, pd.Series(dtype=float)), "USD", currency, fx),
             f"{key}_benchmark",
             fx,
             deposits,

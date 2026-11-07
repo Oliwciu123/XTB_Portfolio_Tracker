@@ -4,13 +4,13 @@ from pathlib import Path
 
 import pytest
 
+from xtb_analyzer.flows import extract_deposits
 from xtb_analyzer.parser import (
     discover_export_files,
     load_csv,
     parse_decimal,
     parse_timestamp,
 )
-from xtb_analyzer.flows import extract_deposits
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -33,11 +33,11 @@ def test_load_legacy_csv():
     account = load_csv(FIXTURES / "legacy_usd_cash_ops.csv")
     assert account.currency == "USD"
     assert account.account_id == "90000001"
-    assert account.equity == Decimal("10000.00")
+    assert account.equity == Decimal("8346.88")
     assert len(account.transactions) >= 50
     assert account.transactions[0].type == "transfer_in"
     buys = [tx for tx in account.transactions if tx.type == "buy"]
-    assert buys[0].symbol == "AMD.US"
+    assert buys[0].symbol == "MSFT.US"
     assert buys[0].shares == Decimal("1")
 
 
@@ -47,11 +47,11 @@ def test_load_modern_flat_csv():
     assert account.account_id == "90000001"  # recovered from conversion comment
     assert len(account.transactions) >= 50
     assert account.transactions[0].type == "transfer_in"
-    assert account.transactions[0].amount == Decimal("1206.28")
+    assert account.transactions[0].amount == Decimal("1000.00")
     buys = [tx for tx in account.transactions if tx.type == "buy"]
-    assert buys[0].symbol == "AMD.US"
+    assert buys[0].symbol == "MSFT.US"
     assert buys[0].shares == Decimal("1")
-    assert buys[0].price == Decimal("251.27")
+    assert buys[0].price == Decimal("100.00")
 
 
 def test_load_v2_xlsx_with_semicolon_lines_in_one_cell():
@@ -72,22 +72,22 @@ def test_load_xtb_v2_cash_operations():
 
     first = account.transactions[0]
     assert first.type == "transfer_in"
-    assert first.amount == Decimal("1206.28")
+    assert first.amount == Decimal("1000.00")
 
     buys = [tx for tx in account.transactions if tx.type == "buy"]
-    assert buys[0].symbol == "AMD.US"
+    assert buys[0].symbol == "MSFT.US"
     assert buys[0].shares == Decimal("1")
-    assert buys[0].price == Decimal("251.27")
-    assert buys[0].amount == Decimal("-251.27")
+    assert buys[0].price == Decimal("100.00")
+    assert buys[0].amount == Decimal("-100.00")
 
     sells = [tx for tx in account.transactions if tx.type == "sell"]
     assert len(sells) == 1
-    assert sells[0].symbol == "AMD.US"
-    assert sells[0].shares == Decimal("1")
-    assert sells[0].price == Decimal("500.00")
+    assert sells[0].symbol == "MSFT.US"
+    assert sells[0].shares == Decimal("0.5")
+    assert sells[0].price == Decimal("120.00")
 
     dividends = [tx for tx in account.transactions if tx.type == "dividend"]
-    assert dividends[0].amount == Decimal("2.50")
+    assert dividends[0].amount == Decimal("3.00")
 
 
 def test_load_xtb_v2_without_currency_in_filename(tmp_path: Path):
@@ -247,14 +247,18 @@ def test_multi_section_export_uses_cash_operations():
     assert account.currency == "USD"
     assert account.account_id == "90000001"
     assert any(tx.type == "buy" for tx in account.transactions)
-    assert account.transactions[0].amount == Decimal("1206.28")
+    assert account.transactions[0].amount == Decimal("1000.00")
 
 
 def test_discover_skips_closed_positions(tmp_path: Path):
     cash = tmp_path / "xStation5_cashOperations_USD.csv"
     closed = tmp_path / "xStation5_closedPositions_USD.csv"
-    cash.write_text((FIXTURES / "xtb_v2_usd_cash_ops.csv").read_text(encoding="utf-8"), encoding="utf-8")
-    closed.write_text((FIXTURES / "xtb_v2_closed_positions.csv").read_text(encoding="utf-8"), encoding="utf-8")
+    cash.write_text(
+        (FIXTURES / "xtb_v2_usd_cash_ops.csv").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    closed.write_text(
+        (FIXTURES / "xtb_v2_closed_positions.csv").read_text(encoding="utf-8"), encoding="utf-8"
+    )
     # Also a misleading name that matches XTB_*.csv but is positions-only.
     wrongly_named = tmp_path / "XTB_USD_account.csv"
     wrongly_named.write_text(
@@ -302,7 +306,7 @@ def test_discover_raises_with_reason_for_unreadable_cs_xlsx(tmp_path: Path):
     """Canonical XTB_*_cs.xlsx that cannot be opened must not fail silently."""
     bad = tmp_path / "XTB_USD_cs.xlsx"
     bad.write_bytes(b"not-an-xlsx")
-    with pytest.raises(ValueError, match="Nie wszystkie pliki|nie udało się"):
+    with pytest.raises(ValueError, match="Some canonical XTB exports|could not be read"):
         discover_export_files(tmp_path)
 
 

@@ -1,34 +1,30 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "xtb-analyzer"
-version = "0.1.0"
-description = "Analyze XTB portfolio from CSV cash operation exports"
+version = "0.2.0"
+description = "Desktop ZIP importer and interactive XTB portfolio analysis"
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "pandas>=2.0",
+    "pandas>=2.2,<4",
     "numpy>=1.24",
     "yfinance>=0.2",
-    "matplotlib>=3.7",
-    "plotly>=5.18",
+    "plotly>=6.0",
     "requests>=2.31",
     "openpyxl>=3.1",
     "pyarrow>=14.0",
-    "ipykernel>=6.25",
-    "ipywidgets>=8.0",
-    "notebook>=7.0",
-    "pywebview>=5.1",
-    "tkinterdnd2>=0.4",
+    "platformdirs>=4.0",
+    "tzdata>=2024.1",
 ]
 
 [project.optional-dependencies]
-dev = [
-    "pytest>=7.4",
-    "pyinstaller>=6.0",
-]
+desktop = ["pywebview>=5.1", "tkinterdnd2>=0.4"]
+build = ["pyinstaller>=6.0"]
+notebook = ["notebook>=7.0", "ipykernel>=6.25", "ipywidgets>=8.0", "matplotlib>=3.7"]
 
 [project.scripts]
 xtb-analyzer = "xtb_analyzer.__main__:main"
@@ -40,5 +36,3 @@ where = ["src"]
 [tool.setuptools.package-data]
 xtb_analyzer = ["assets/*"]
 
-[tool.pytest.ini_options]
-testpaths = ["tests"]

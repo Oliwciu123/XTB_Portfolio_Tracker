@@ -1,170 +1,156 @@
-# xtb_portfolio_analyzer
+# XTB Portfolio Analyzer
 
-Analyze your XTB portfolio from CSV cash-operation exports and generate a professional, interactive HTML report.
+[![CI](https://github.com/Oliwciu123/xtb_portfolio_analyzer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Oliwciu123/xtb_portfolio_analyzer/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](LICENSE)
 
-## Setup
+![Portfolio dashboard with fictional data](docs/images/dashboard.png)
 
-From the project root:
+**Turn an XTB account export into an interactive portfolio report.** A Python CLI
+and desktop app for investors who want to understand performance across PLN, USD
+and EUR accounts. It reconstructs cash and positions, separates investment and
+currency effects, and compares results with deposit-matched benchmarks. Try the
+offline demo below: every account, transaction, quote and FX rate is fictional.
 
-```bash
-pip install -e ".[dev]"
-```
-
-If the full install fails on Windows (long paths), install core dependencies manually:
-
-```bash
-pip install pandas numpy yfinance matplotlib plotly requests pyarrow notebook ipykernel pytest
-pip install -e . --no-deps
-```
-
-### Notebook in Cursor / VS Code
-
-1. Run `pip install -e ".[dev]"` from the project root.
-2. Select the **same Python interpreter** that received the install (Command Palette → *Python: Select Interpreter*).
-3. Open `notebooks/portfolio_analysis.ipynb` and **restart the kernel**.
-4. Run all cells.
-
-The notebook also bootstraps `src/` on `sys.path`, so it works without a formal install during local development. For tests and CLI usage, prefer the editable install.
-
-Verify the package is available:
-
-```bash
-python -c "import xtb_analyzer; print(xtb_analyzer.__file__)"
-```
-
-## Usage
-
-1. Export account data from XTB for each currency (USD / EUR / PLN).
-2. Put these files in `data/`:
-   - `XTB_USD_cs.xlsx`
-   - `XTB_EURO_cs.xlsx`
-
-   Supported exports (auto-detected):
-   - Full account XLSX (Historia → Eksportuj jako XLSX)
-   - Cash Operations CSV/XLSX from the newer xStation export (also OK if Excel
-     put each row into one cell — the parser splits it)
-
-3. From the project root (branch **main**):
-
-```bash
-git checkout main
-git pull
-python -m xtb_analyzer --currency pln --open
-```
-
-Or open the notebook and run all cells. Replacing files in `data/` and re-running is enough — the whole pipeline rebuilds from the latest exports.
-
-## Desktop app (Windows, portable)
-
-A real Windows window — not a website. Drop a ZIP with XTB account history; the same stats, comparisons, and benchmarks as the CLI run locally with live quotes. The report opens inside the program.
-
-### What Oliwier copies / clicks
-
-1. **One-time build** (on any Windows PC that has Python 3.10+ from [python.org](https://www.python.org/downloads/), with “Add to PATH”):
-   ```text
-   build_windows.bat
-   ```
-   This creates `dist\XTBPortfolioAnalyzer\` (PyInstaller one-folder: `.exe` + `_internal`).
-
-2. **Copy the whole folder** `dist\XTBPortfolioAnalyzer` to a USB stick or zip it for a colleague. You do **not** need Python on the target PC.
-
-3. **Double-click** `XTBPortfolioAnalyzer.exe`.
-
-4. Drop the history ZIP onto the window (or click **Wybierz archiwum ZIP**). A progress bar runs while prices, FX, and the report are calculated. You can switch the report currency (`PLN` / `USD` / `EUR`) directly inside the interactive report. Internet is required for Yahoo Finance and NBP.
-
-### Developer run (source)
-
-```powershell
-pip install -e ".[dev]"
-python -m xtb_analyzer.desktop
-```
-
-Optional flags: `--currency pln`, `--zip path\to\file.zip`. On Linux/macOS the same module works when a WebView backend is available.
-
-### ZIP layout
-
-USD, EUR, and PLN account files are accepted (PLN may be absent). Example:
-
-```text
-<account>/USD_<account>_<from>_<to>.xlsx
-<account>/EUR_<account>_<from>_<to>.xlsx
-<account>/PLN_<account>_<from>_<to>.xlsx
-```
-
-Each workbook’s **Cash Operations** sheet is used. Closed Positions / Open Positions sheets are ignored. If several date ranges exist for one account, the file with the latest end date is used. Canonical names also work: `XTB_USD_cs.xlsx`, `XTB_EURO_cs.xlsx`.
-
-Unpacked uploads and price/FX caches are written under `data/` next to the `.exe` (or project root in source). That folder is gitignored — do not commit private exports.
 ## Features
 
-### Returns (three methods, easy to compare)
+- ROI, money-weighted return (XIRR) and daily time-weighted return (TWR).
+- NAV reconstruction from cash operations, fractional positions and stock splits.
+- Volatility, drawdown, Sharpe, Sortino, historical VaR and benchmark relations.
+- PLN FX attribution, income, taxes, company P&L and holdings allocation.
+- Interactive, self-contained HTML reports with PNG and comparison CSV export.
+- Desktop ZIP import, progress feedback and live refresh; custom Yahoo symbols.
 
-- **ROI** — simple return on deposited capital (value ÷ deposits − 1)
-- **MWR / XIRR** — annualized money-weighted return of the actual cash flows (bisection solver)
-- **TWR** — time-weighted return with deposits neutralized; cumulative and annualized, directly comparable with indices
+## Quickstart
 
-### Benchmarks
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run from
+the repository root on Windows, macOS or Linux:
 
-- **Deposit-matched benchmarks** — S&P 500 Total Return (^SP500TR), NASDAQ 100 (^NDX), MSCI ACWI, and Philadelphia Semiconductor Index (^SOX), plus interactive comparison with any index, ETF, commodity, or company ticker
-
-### FX attribution
-
-- Splits total PLN gain into **investment gain** (what the assets earned) and **currency gain** (what holding USD/EUR earned or lost, including the XTB conversion spread) — exact decomposition, per currency and over time
-
-### Risk (computed on TWR daily returns)
-
-- Annualized volatility, Sharpe, Sortino, Alpha, Beta, Calmar, VaR 95%
-- Max drawdown with dates, monthly returns heatmap, rolling volatility
-
-### Portfolio structure & costs
-
-- Company profit & loss ranking (realized + unrealized P&L sorted from largest profit to largest loss)
-- Allocation by position, by account currency and by sector
-- Dividends, interest and withholding taxes per currency
-- FX conversion cost — XTB 0.5% commission on PLN → USD/EUR conversions
-
-### Engine
-
-- Parses multi-section XTB CSV/XLSX exports
-- Reconstructs daily portfolio NAV in PLN, USD, EUR through today
-- FX rates from NBP (table A) with Yahoo Finance fallback; on-disk price/FX caches
-
-## Project layout
-
-```
-src/xtb_analyzer/
-  parser.py         # XTB CSV/XLSX parsing
-  comment_parser.py # trade/transfer comment parsing
-  models.py         # dataclasses
-  positions.py      # position tracking (average cost)
-  portfolio.py      # daily NAV reconstruction
-  flows.py          # deposits, conversion costs
-  cash.py           # cash ledger, income by currency
-  fx.py             # NBP / Yahoo FX rates
-  prices.py         # price fetching + cache
-  benchmark.py      # deposit-matched index benchmarks
-  returns.py        # ROI, XIRR (MWR), TWR
-  risk.py           # risk statistics on TWR returns (Sharpe, Sortino, Alpha, Beta)
-  attribution.py    # FX vs investment gain decomposition
-  metrics.py        # company P&L ranking + summary metrics
-  sectors.py        # sector enrichment (Yahoo)
-  charts.py         # Plotly figures (dark theme)
-  report.py         # Interactive 4-section HTML report generator
-  session.py        # history zip → HTML report
-  desktop.py        # desktop window (zip picker + report)
-  paths.py          # portable / frozen app paths
-  __main__.py       # CLI: python -m xtb_analyzer
-packaging/
-  xtb_portfolio_analyzer.spec   # PyInstaller one-folder
-build_windows.bat               # one-time Windows build
-run_desktop.py                  # PyInstaller entry
+```sh
+git clone https://github.com/Oliwciu123/xtb_portfolio_analyzer.git
+cd xtb_portfolio_analyzer
+uv sync
+uv run xtb-analyzer --demo --open
 ```
 
-## Tests
+The report is written to `output/report.html`. The demo needs no XTB account,
+API key or market-data connection after dependencies are installed.
 
-```bash
-pytest
+Desktop demo (native webview, optional dependencies):
+
+```sh
+uv run --extra desktop xtb-analyzer-desktop --demo
 ```
 
-## Data privacy
+For your own export, run `uv run --extra desktop xtb-analyzer-desktop` and choose
+an XTB ZIP. Or extract full account workbooks into the ignored `data/` folder:
 
-The `data/` and `output/` folders are gitignored. Do not commit your transaction files or uploaded zips. The desktop app stores unpacked uploads under `data/uploads/`.
+```sh
+uv run xtb-analyzer --data-dir data --currency pln --open
+```
+
+Real-data analysis fetches Yahoo Finance prices and NBP FX over the internet.
+`--no-live` disables current quotes; it does not disable historical downloads.
+See the [user guide](docs/USER_GUIDE.md) for desktop and portable Windows usage.
+
+## Screenshots
+
+Real application renders using only the synthetic demo:
+
+![Reconstructed NAV](docs/images/nav.png)
+![Deposit-matched returns](docs/images/returns.png)
+
+<details>
+<summary>Desktop import screen and complete HTML overview</summary>
+
+![Desktop import screen rendered in Chromium](docs/images/desktop-start.png)
+![Full HTML overview](docs/images/report.png)
+
+</details>
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[XTB ZIP / XLSX / CSV] --> B[Normalize cash operations]
+    B --> C[Cash, positions and external flows]
+    D[Historical prices and FX] --> E[Daily NAV]
+    C --> E
+    E --> F[Returns, risk and FX attribution]
+    F --> G[Interactive HTML report]
+    G --> H[Browser or desktop window]
+```
+
+## Input format
+
+Use complete xStation account histories with a **CASH OPERATION HISTORY** sheet,
+including funding before the first purchase. Account currency is inferred from
+`PLN`, `USD`, `EUR` or `EURO` in workbook names. Supported legacy and v2 CSV
+cash-operation layouts are covered by parser fixtures. Closed-position summaries
+alone cannot reconstruct a portfolio. Localized column aliases remain supported.
+
+[`examples/`](examples/README.md) includes reproducible XLSX/ZIP histories and
+fictional market series. Private exports, reports and caches are gitignored.
+
+## Methodology
+
+- **NAV:** cash plus shares × unadjusted price, translated into the report currency.
+- **ROI:** `(NAV + withdrawals − gross deposits) / gross deposits`.
+- **XIRR:** solves `Σ CFᵢ / (1 + r)^(daysᵢ / 365.25) = 0`, including terminal NAV.
+- **TWR:** chains `NAVₜ / (NAVₜ₋₁ + external flowₜ) − 1`; flows are assumed to
+  occur at the start of each day.
+- **Risk:** daily TWR observations; volatility uses `√252`, default risk-free rate 0%.
+- **Benchmarks:** hypothetical purchases and sales with the same external flows,
+  converted to the report currency. The comparison chart shows ROI.
+
+Assumptions, FX decomposition and edge cases are in
+[METHODOLOGY.md](docs/METHODOLOGY.md). The mathematical audit and the legacy ROI
+fix are recorded in [AUDIT.md](docs/AUDIT.md).
+
+## Project structure
+
+```text
+src/xtb_analyzer/   Parser, financial engine, report and desktop app
+tests/             Reference metrics, parser and UI regression tests
+examples/          Entirely fictional account and market data
+scripts/           Sample generation and real screenshot capture
+packaging/         PyInstaller specification and Windows release builder
+docs/              Methodology, user guide, CV material and screenshots
+notebooks/         Optional offline exploration of the same engine
+```
+
+## Development
+
+```sh
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest
+uv run playwright install chromium
+uv run python scripts/make_screenshots.py
+```
+
+CI defines lint, formatting, tests and demo execution on Ubuntu, Windows and
+macOS with Python 3.10 and 3.13. A separate job renders screenshots. Dependencies
+are locked in `uv.lock`; use `uv sync --locked` to reproduce them.
+See the [verification record](docs/VERIFICATION.md) for checks actually run locally.
+
+## Limitations
+
+- Account valuation supports PLN, USD and EUR; broker layout changes may need new aliases.
+- Daily TWR approximates intraday flows. XIRR can have no solution or multiple roots.
+- Market data may be delayed, unavailable or revised. Polling does not guarantee new quotes.
+- Benchmarks need sufficient Yahoo history and supported quote currency/FX. They exclude
+  commissions and taxes; futures are price comparisons without a margin or roll model.
+- The demo is illustrative, not an investment strategy or a record of actual performance.
+- Source-based desktop commands support Windows and macOS; the portable build script targets
+  Windows. Native desktop rendering depends on the platform's webview runtime.
+
+## Roadmap
+
+- Add fixtures for more broker export versions and corporate actions.
+- Add explicit intraday cash-flow timing where source data permits it.
+- Automate signed desktop release artifacts for Windows and macOS.
+
+## License
+
+[MIT](LICENSE). Project presentation material: [CV and interview notes](docs/CV_PROJECT_DESCRIPTION.md).

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from xtb_analyzer.report import generate_report
@@ -15,7 +16,7 @@ def report_from_zip_bytes(
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = True,
-    on_progress=None,
+    on_progress: Callable[[float, str], None] | None = None,
 ) -> Path:
     """Extract a history zip and write the standard HTML report next to it."""
     work_dir = Path(work_dir)
@@ -41,7 +42,7 @@ def report_from_zip_path(
     currency: str = "pln",
     use_cache: bool = True,
     refresh_latest: bool = True,
-    on_progress=None,
+    on_progress: Callable[[float, str], None] | None = None,
 ) -> Path:
     return report_from_zip_bytes(
         Path(zip_path).read_bytes(),

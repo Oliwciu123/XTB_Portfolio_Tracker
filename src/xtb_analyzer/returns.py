@@ -2,7 +2,8 @@
 
 All three answer "how did the portfolio perform?" but from different angles:
 
-- ROI  – final value / total deposits - 1. Ignores timing of deposits.
+- ROI  – (final value + withdrawals - gross deposits) / gross deposits.
+  Ignores timing of external cash flows.
 - XIRR – annualized internal rate of return of the external cash flows.
   Reflects the investor's actual money-weighted experience.
 - TWR  – chain-linked daily returns with deposits neutralized. Measures the
@@ -45,6 +46,7 @@ class ReturnMeasures:
     """Annualized money-weighted return (IRR)."""
     twr: float
     twr_annualized: float | None
+    withdrawn: float = 0.0
 
 
 def xirr(flows: list[CashFlow]) -> float | None:
@@ -57,6 +59,8 @@ def xirr(flows: list[CashFlow]) -> float | None:
 
     t0 = min(flow.date for flow in flows)
     years = np.array([(flow.date - t0).days / DAYS_IN_YEAR for flow in flows])
+    if not np.isfinite(amounts).all() or years.max() == 0:
+        return None
 
     def npv(rate: float) -> float:
         return float(np.sum(amounts / np.power(1.0 + rate, years)))
@@ -87,7 +91,7 @@ def build_external_cash_flows(
 ) -> list[CashFlow]:
     """External flows in the report currency: deposits (negative) + final NAV (positive)."""
     currency = currency.lower()
-    deposits = extract_deposits(accounts)
+    deposits = extract_deposits(accounts, fx=fx)
     if not deposits or nav.empty:
         return []
 
@@ -104,8 +108,12 @@ def build_external_cash_flows(
         if currency == "pln":
             amount = float(deposit.pln_spent)
         else:
-            fx_row = fx.loc[:day].iloc[-1] if fx is not None and not fx.empty else pd.Series(dtype=float)
-            amount = convert_value(float(deposit.amount_foreign), deposit.currency, currency.upper(), fx_row)
+            fx_row = (
+                fx.loc[:day].iloc[-1] if fx is not None and not fx.empty else pd.Series(dtype=float)
+            )
+            amount = convert_value(
+                float(deposit.amount_foreign), deposit.currency, currency.upper(), fx_row
+            )
         flows.append(CashFlow(date=day, amount=-amount))
 
     final_value = float(nav[f"nav_{currency}"].iloc[-1])
@@ -124,7 +132,7 @@ def twr_daily_returns(nav: pd.DataFrame, currency: str = "pln") -> pd.Series:
     if dep_col not in nav.columns:
         raise ValueError("NAV must include deposit columns. Run attach_deposits_to_nav() first.")
 
-    active = nav[dep_col] > 0
+    active = nav.get(f"gross_deposits_{currency}", nav[dep_col]) > 0
     if not active.any():
         return pd.Series(dtype=float)
     view = nav.loc[nav.index[active][0] :, [nav_col, dep_col]].dropna(subset=[nav_col])
@@ -157,9 +165,10 @@ def compute_return_measures(
     nav_col = f"nav_{currency}"
     dep_col = f"deposits_{currency}"
 
-    invested = float(nav[dep_col].iloc[-1])
+    net_invested = float(nav[dep_col].iloc[-1])
+    invested = float(nav.get(f"gross_deposits_{currency}", nav[dep_col]).iloc[-1])
     final_value = float(nav[nav_col].iloc[-1])
-    roi = final_value / invested - 1 if invested > 0 else 0.0
+    roi = (final_value - net_invested) / invested if invested > 0 else 0.0
 
     flows = build_external_cash_flows(accounts, nav, currency, fx=fx, use_cache=use_cache)
     xirr_annual = xirr(flows)
@@ -183,11 +192,12 @@ def compute_return_measures(
         as_of=nav.index[-1].strftime("%Y-%m-%d"),
         invested=invested,
         final_value=final_value,
-        gain=final_value - invested,
+        gain=final_value - net_invested,
         period_days=period_days,
         roi=roi,
         mwr=mwr_period,
         xirr=xirr_annual,
         twr=twr_total,
         twr_annualized=twr_annual,
+        withdrawn=invested - net_invested,
     )

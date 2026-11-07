@@ -1,47 +1,43 @@
-# AGENTS.md
+# Contributor instructions
 
-## Cursor Cloud specific instructions
+This is one Python CLI/library and desktop product, **XTB Portfolio Analyzer**.
+It parses XTB exports and writes interactive HTML. There is no server or database.
 
-This is a single Python CLI/library product — **XTB Portfolio Analyzer** (`xtb-analyzer`).
-It parses XTB broker account exports and generates an interactive HTML report.
-There is no long-running server or database. See `README.md` for full usage and options.
+- Work on `main` for this repository; do not delete other branches without approval.
+- Keep application text, documentation, comments and new commit messages in English.
+- Preserve localized parser aliases: these recognize input, not UI language.
+- Never commit real exports, account details, generated private reports, caches,
+  secrets or `.env` files. Use `examples/` for fictional data and `data/` for private data.
+- Do not change financial definitions without a documented reason and regression case.
+- Use cross-platform paths and the existing src layout.
 
-### Environment
+## Setup and checks
 
-- Python dependencies are installed into a virtualenv at `.venv/` (Ubuntu's system Python is
-  externally managed / PEP 668, so a venv is used). Activate it before running anything:
-  `source .venv/bin/activate` (or prefix commands with `.venv/bin/`).
-- The startup update script refreshes the venv, so dependencies are already installed — no need
-  to reinstall on a fresh session.
-- `pyarrow` is required at runtime for the on-disk price/FX cache (`data/cache/`); it is installed
-  in addition to `pyproject.toml` deps because the README lists it but `pyproject.toml` omits it.
+```sh
+uv sync --locked
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest
+uv run xtb-analyzer --demo
+```
 
-### Lint / test / build / run
+The offline demo uses synthetic market data and needs no network after setup.
+Real-data reports require Yahoo Finance and NBP. `--no-live` only skips current quotes.
+Plotly.js is embedded in generated HTML.
 
-- Standard commands live in `README.md` (`pytest`, `python -m xtb_analyzer ...`). There is no
-  lint config or separate build step (editable install only).
-- Tests: `python -m pytest`. Parser/unit tests use fixtures under `tests/fixtures/` (including
-  full-account XLSX samples). Real user exports in `data/` are gitignored and not required for CI.
+## Screenshots and desktop
 
-### Running the app end-to-end (report generation)
+```sh
+uv run playwright install chromium
+uv run python scripts/make_screenshots.py
+uv run --extra desktop xtb-analyzer-desktop --demo
+uv run --extra desktop python scripts/make_screenshots.py --native
+```
 
-- Canonical inputs (preferred): `data/XTB_USD_cs.xlsx` and `data/XTB_EURO_cs.xlsx` — full xStation
-  account XLSX reports. Currency is taken from the filename (`USD` / `EURO` / `EUR` / `PLN`).
-  The parser reads the `CASH OPERATION HISTORY` sheet.
-- When those canonical files are present, `discover_export_files()` uses **only** them and ignores
-  leftover Closed Positions / broken CSV files in `data/`.
-- `data/` is gitignored. To demo the full pipeline, copy fixtures:
-  `cp tests/fixtures/legacy_usd_account.xlsx data/XTB_USD_cs.xlsx`
-  `cp tests/fixtures/legacy_eur_account.xlsx data/XTB_EURO_cs.xlsx`
-  then run `python -m xtb_analyzer --currency pln`.
-- Report generation needs **outbound network**: Yahoo Finance (prices/benchmarks via `yfinance`) and
-  the NBP API (`api.nbp.pl`, PLN FX rates). Use `--no-live` and/or `--no-cache` to control fetching.
-  Charts in the HTML load Plotly.js from a CDN, so viewing the report also needs internet.
+The screenshot script must capture actual UI using fictional data. Do not use
+placeholders. Windows builds use `build_windows.bat` and the specification under
+`packaging/`; only application files belong in the distributable archive.
 
-### Portable Windows desktop app
-
-- Preferred user path: on Windows run `build_windows.bat` once → copy
-  `dist/XTBPortfolioAnalyzer/` → double-click `XTBPortfolioAnalyzer.exe`.
-- Spec: `packaging/xtb_portfolio_analyzer.spec` (PyInstaller one-folder). Entry: `run_desktop.py`.
-- Desktop module: `python -m xtb_analyzer.desktop` (always live quotes; ZIP drop + progress).
-- Do not treat `pip install -e .` + system Python as the end-user path.
+`scripts/generate_demo_data.py --seed 42 --end-date YYYY-MM-DD` regenerates the
+examples byte-for-byte for a fixed end date. It must not read private inputs.
+Keep the small fixtures in `scripts/generate_test_fixtures.py` separate.

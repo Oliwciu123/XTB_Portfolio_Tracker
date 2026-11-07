@@ -17,8 +17,8 @@ def test_extract_deposits_from_modern_fixture():
     assert len(deposits) == 8
     first = deposits[0]
     assert first.currency == "USD"
-    assert first.amount_foreign == Decimal("1206.28")
-    assert round(float(first.pln_spent), 2) == 4499.99
+    assert first.amount_foreign == Decimal("1000.00")
+    assert round(float(first.pln_spent), 2) == 4000.00
 
 
 def test_conversion_loss_is_commission_only():

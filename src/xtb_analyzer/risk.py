@@ -53,10 +53,12 @@ def drawdown_from_returns(daily_returns: pd.Series) -> pd.Series:
     if daily_returns.empty:
         return pd.Series(dtype=float)
     wealth = (1 + daily_returns).cumprod()
-    return wealth / wealth.cummax() - 1
+    return wealth / wealth.cummax().clip(lower=1.0) - 1
 
 
-def _max_drawdown(daily_returns: pd.Series) -> tuple[float, pd.Timestamp | None, pd.Timestamp | None]:
+def _max_drawdown(
+    daily_returns: pd.Series,
+) -> tuple[float, pd.Timestamp | None, pd.Timestamp | None]:
     drawdown = drawdown_from_returns(daily_returns)
     if drawdown.empty or drawdown.min() >= 0:
         return 0.0, None, None
@@ -77,20 +79,20 @@ def _annualized_return(daily_returns: pd.Series) -> float | None:
 
 
 def _sharpe(returns: pd.Series, risk_free_annual: float = 0.0) -> float:
-    if returns.empty or returns.std() == 0:
-        return 0.0
+    if len(returns) < 2 or returns.std() == 0:
+        return float("nan")
     excess = returns - risk_free_annual / TRADING_DAYS
     return float(np.sqrt(TRADING_DAYS) * excess.mean() / excess.std())
 
 
 def _sortino(returns: pd.Series, risk_free_annual: float = 0.0) -> float:
     if returns.empty:
-        return 0.0
+        return float("nan")
     excess = returns - risk_free_annual / TRADING_DAYS
-    downside = excess[excess < 0]
-    if downside.empty or downside.std() == 0:
-        return 0.0
-    return float(np.sqrt(TRADING_DAYS) * excess.mean() / downside.std())
+    downside_deviation = float(np.sqrt(np.minimum(excess, 0).pow(2).mean()))
+    if downside_deviation == 0:
+        return float("nan")
+    return float(np.sqrt(TRADING_DAYS) * excess.mean() / downside_deviation)
 
 
 def _benchmark_relation(
@@ -104,7 +106,11 @@ def _benchmark_relation(
     aligned_bench = benchmark_series.reindex(portfolio_returns.index, method="ffill").dropna()
     bench_returns = aligned_bench.pct_change().dropna()
     joined = pd.concat([portfolio_returns, bench_returns], axis=1, join="inner").dropna()
-    benchmark_return = float(aligned_bench.iloc[-1] / aligned_bench.iloc[0] - 1) if len(aligned_bench) > 1 else None
+    benchmark_return = (
+        float(aligned_bench.iloc[-1] / aligned_bench.iloc[0] - 1)
+        if len(aligned_bench) > 1
+        else None
+    )
 
     if len(joined) < 5:
         return BenchmarkRelation(name, None, None, None, benchmark_return)
@@ -127,7 +133,7 @@ def compute_risk_stats(
 
     ``benchmarks`` maps display names to benchmark *price level* series.
     """
-    daily_returns = daily_returns.dropna()
+    daily_returns = daily_returns.replace([np.inf, -np.inf], np.nan).dropna()
     mdd, mdd_start, mdd_end = _max_drawdown(daily_returns)
     annual_return = _annualized_return(daily_returns)
     monthly = monthly_returns(daily_returns)
@@ -138,7 +144,9 @@ def compute_risk_stats(
     ]
 
     return RiskStats(
-        volatility_annual=float(daily_returns.std() * np.sqrt(TRADING_DAYS)) if not daily_returns.empty else 0.0,
+        volatility_annual=float(daily_returns.std() * np.sqrt(TRADING_DAYS))
+        if len(daily_returns) > 1
+        else 0.0,
         sharpe=_sharpe(daily_returns, risk_free_annual),
         sortino=_sortino(daily_returns, risk_free_annual),
         max_drawdown=mdd,

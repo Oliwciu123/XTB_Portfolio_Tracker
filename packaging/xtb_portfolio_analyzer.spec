@@ -16,6 +16,14 @@ datas = [
     (str(ASSETS / "app.ico"), "xtb_analyzer/assets"),
     (str(ASSETS / "app.png"), "xtb_analyzer/assets"),
 ]
+# Explicitly bundle only the fictional demo, never the private data/ directory.
+datas += [
+    (str(ROOT / "examples" / name), "examples")
+    for name in (
+        "XTB_USD_cs.xlsx", "XTB_EUR_cs.xlsx", "prices.csv", "fx.csv", "benchmarks.csv",
+        "instruments.csv", "benchmark_metadata.csv", "demo.json",
+    )
+]
 binaries = []
 hiddenimports = [
     "webview",
@@ -52,7 +60,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["notebook", "ipykernel", "ipywidgets", "matplotlib.tests", "pytest"],
+    excludes=["notebook", "ipykernel", "ipywidgets", "matplotlib", "pytest", "IPython", "scipy", "sympy"],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,

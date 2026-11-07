@@ -1,0 +1,5 @@
+key,currency,name
+demo_sp500,USD,S&P 500 (synthetic)
+demo_nasdaq100,USD,Nasdaq-100 (synthetic)
+demo_sox,USD,SOX (synthetic)
+demo_wig20,PLN,WIG20 (synthetic)

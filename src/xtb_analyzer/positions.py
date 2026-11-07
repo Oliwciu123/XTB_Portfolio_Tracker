@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from collections import defaultdict
-from decimal import Decimal
+import pandas as pd
 
 from xtb_analyzer.models import Account, Position, Transaction
 
@@ -13,7 +12,7 @@ def _position_key(account_id: str, symbol: str) -> tuple[str, str]:
 def apply_transaction(positions: dict[tuple[str, str], Position], tx: Transaction) -> None:
     if tx.type == "buy" and tx.symbol and tx.shares:
         key = _position_key(tx.account_id, tx.symbol)
-        price = tx.price or (abs(tx.amount) / tx.shares)
+        price = abs(tx.amount) / tx.shares
         if key in positions:
             pos = positions[key]
             total_shares = pos.shares + tx.shares
@@ -31,8 +30,14 @@ def apply_transaction(positions: dict[tuple[str, str], Position], tx: Transactio
     elif tx.type == "sell" and tx.symbol and tx.shares:
         key = _position_key(tx.account_id, tx.symbol)
         if key not in positions:
-            return
+            raise ValueError(
+                f"Sale of {tx.symbol} has no preceding purchase. Import the complete account history."
+            )
         pos = positions[key]
+        if tx.shares > pos.shares:
+            raise ValueError(
+                f"Sale of {tx.symbol} exceeds reconstructed shares. Check history coverage and stock splits."
+            )
         pos.shares -= tx.shares
         if pos.shares <= 0:
             del positions[key]
@@ -49,9 +54,7 @@ def build_positions(accounts: list[Account]) -> dict[tuple[str, str], Position]:
     return positions
 
 
-def positions_dataframe(positions: dict[tuple[str, str], Position]):
-    import pandas as pd
-
+def positions_dataframe(positions: dict[tuple[str, str], Position]) -> pd.DataFrame:
     rows = []
     for pos in positions.values():
         rows.append(

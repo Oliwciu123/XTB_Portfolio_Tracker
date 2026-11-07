@@ -16,7 +16,13 @@ import threading
 import uuid
 from pathlib import Path
 
-from xtb_analyzer.paths import app_writable_root, asset_path, ensure_app_cwd
+from xtb_analyzer.paths import (
+    app_writable_root,
+    asset_path,
+    ensure_app_cwd,
+    is_frozen,
+    resource_root,
+)
 from xtb_analyzer.session import report_from_zip_path
 from xtb_analyzer.zip_import import ZipImportError
 
@@ -31,6 +37,11 @@ MUTED = "#94a3b8"
 ACCENT = "#3b82f6"
 ACCENT_SOFT = "#60a5fa"
 ACCENT_ACTIVE = "#2563eb"
+ACCENT_HOVER = "#6366f1"
+DROP_BG = "#12233b"
+DROP_BORDER = "#34547c"
+DROP_HOVER_BG = "#1a3452"
+DROP_HOVER_BORDER = "#22d3ee"
 
 _BRACED_PATH = re.compile(r"\{([^{}]+)\}")
 _QUOTED_OR_TOKEN = re.compile(r'"[^"]+"|\S+')
@@ -72,31 +83,18 @@ def apply_window_icon(root) -> None:
 
 
 def _prepare_webview():
-    """Import pywebview, and on Linux find the apt-installed WebKit bindings."""
-    system_site = Path("/usr/lib/python3/dist-packages")
-    if system_site.is_dir() and str(system_site) not in sys.path:
-        sys.path.append(str(system_site))
+    """Let pywebview select the native backend for the current platform."""
     import webview
 
-    gui = None
-    if sys.platform.startswith("linux"):
-        try:
-            import gi  # noqa: F401
-
-            gui = "gtk"
-        except Exception:
-            gui = None
-    return webview, gui
+    return webview, None
 
 
 _DESKTOP_START_HTML = """<!DOCTYPE html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Analizator portfela XTB</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<title>XTB Portfolio Analyzer</title>
 <style>
   * { box-sizing: border-box; }
   html, body {
@@ -238,8 +236,8 @@ _DESKTOP_START_HTML = """<!DOCTYPE html>
 <body>
   <div class="start-screen">
     <div class="upload-card">
-      <h1 class="upload-title">Analizator portfela XTB</h1>
-      <p class="upload-subtitle">Wczytaj historię konta w formacie .zip, aby wygenerować raport.</p>
+      <h1 class="upload-title">XTB Portfolio Analyzer</h1>
+      <p class="upload-subtitle">Import your account history as a ZIP file to generate a report.</p>
 
       <input id="file-input" type="file" accept=".zip" style="display:none">
       <div id="dropzone" class="dropzone" role="button" tabindex="0">
@@ -248,9 +246,9 @@ _DESKTOP_START_HTML = """<!DOCTYPE html>
           <path d="M12 12v9"/>
           <path d="m16 16-4-4-4 4"/>
         </svg>
-        <div id="dropzone-heading" class="dropzone-heading">Upuść archiwum ZIP tutaj</div>
-        <div class="dropzone-hint">lub kliknij, aby wybrać z dysku</div>
-        <span class="dropzone-btn">Wybierz z dysku</span>
+        <div id="dropzone-heading" class="dropzone-heading">Drop your history ZIP here</div>
+        <div class="dropzone-hint">or click to select a file</div>
+        <span class="dropzone-btn">Choose file</span>
       </div>
 
       <div id="progress-wrap" class="progress-wrap">
@@ -292,11 +290,11 @@ _DESKTOP_START_HTML = """<!DOCTYPE html>
           clearInterval(pollTimer);
           pollTimer = null;
           busy = false;
-          showStatus(0, st.message || 'Nie udało się wygenerować raportu.', true);
+          showStatus(0, st.message || 'Unable to generate the report.', true);
         } else if (st.state === 'done' && st.report_url) {
           clearInterval(pollTimer);
           pollTimer = null;
-          showStatus(100, 'Otwieram raport…', false);
+          showStatus(100, 'Opening report...', false);
           window.location.href = st.report_url;
         }
       } catch (e) {}
@@ -306,7 +304,7 @@ _DESKTOP_START_HTML = """<!DOCTYPE html>
   function handleFileObject(file) {
     if (!file || busy) return;
     if (!file.name.toLowerCase().endsWith('.zip')) {
-      showStatus(0, 'Wybierz archiwum w formacie .zip.', true);
+      showStatus(0, 'Select a .zip archive.', true);
       return;
     }
     busy = true;
@@ -331,7 +329,7 @@ _DESKTOP_START_HTML = """<!DOCTYPE html>
       if (res && res.started) {
         busy = true;
         if (res.filename) heading.textContent = res.filename;
-        showStatus(8, 'Liczenie statystyk, porównań i benchmarków…', false);
+        showStatus(8, 'Calculating metrics and benchmark comparisons...', false);
         startPolling();
         return;
       }
@@ -381,6 +379,9 @@ class _LiveReportBridge:
         self._build_progress = 0
         self._build_message = ""
         self._report_url = ""
+        self._custom_tickers: set[str] = set()
+        self._last_data = None
+        self._live_lock = threading.Lock()
 
     def set_window(self, window) -> None:
         self._window = window
@@ -409,11 +410,15 @@ class _LiveReportBridge:
             try:
                 import webview
 
-                file_types = ("Archiwum ZIP (*.zip)", "Wszystkie pliki (*.*)")
+                file_types = ("ZIP archive (*.zip)", "All files (*.*)")
                 dialog_type = getattr(webview, "OPEN_DIALOG", 10)
-                result = self._window.create_file_dialog(dialog_type, allow_multiple=False, file_types=file_types)
+                result = self._window.create_file_dialog(
+                    dialog_type, allow_multiple=False, file_types=file_types
+                )
                 if result:
-                    selected_path = str(result[0]) if isinstance(result, (list, tuple)) else str(result)
+                    selected_path = (
+                        str(result[0]) if isinstance(result, (list, tuple)) else str(result)
+                    )
             except Exception:
                 selected_path = None
         if not selected_path:
@@ -425,7 +430,7 @@ class _LiveReportBridge:
         path = Path(zip_path)
         self._build_state = "running"
         self._build_progress = 8
-        self._build_message = "Liczenie statystyk, porównań i benchmarków…"
+        self._build_message = "Calculating metrics and benchmark comparisons..."
 
         def on_progress(fraction: float, message: str) -> None:
             self._build_progress = max(5, min(98, int(fraction * 100)))
@@ -445,7 +450,7 @@ class _LiveReportBridge:
                 self._html_path = report.resolve()
                 self._report_url = self._html_path.as_uri()
                 self._build_progress = 100
-                self._build_message = "Otwieram raport…"
+                self._build_message = "Opening report..."
                 self._build_state = "done"
             except Exception as exc:
                 self._build_message = str(exc).strip() or exc.__class__.__name__
@@ -461,7 +466,7 @@ class _LiveReportBridge:
 
         self._build_state = "running"
         self._build_progress = 8
-        self._build_message = "Liczenie statystyk, porównań i benchmarków…"
+        self._build_message = "Calculating metrics and benchmark comparisons..."
 
         def on_progress(fraction: float, message: str) -> None:
             self._build_progress = max(5, min(98, int(fraction * 100)))
@@ -482,7 +487,7 @@ class _LiveReportBridge:
                 self._html_path = report.resolve()
                 self._report_url = self._html_path.as_uri()
                 self._build_progress = 100
-                self._build_message = "Otwieram raport…"
+                self._build_message = "Opening report..."
                 self._build_state = "done"
             except Exception as exc:
                 self._build_message = str(exc).strip() or exc.__class__.__name__
@@ -493,7 +498,7 @@ class _LiveReportBridge:
 
     def get_live_update(self, currency: str = "pln") -> dict[str, object] | None:
         from xtb_analyzer.parser import discover_export_files, load_accounts
-        from xtb_analyzer.report import build_live_payload, collect_report_data, render_html_report
+        from xtb_analyzer.report import build_live_payload, collect_report_data
 
         csv_files = discover_export_files(self._data_dir())
         if not csv_files:
@@ -505,12 +510,8 @@ class _LiveReportBridge:
             use_cache=True,
             refresh_latest=True,
         )
-        if self._html_path is not None:
-            try:
-                self._html_path.write_text(render_html_report(data), encoding="utf-8")
-            except Exception:
-                pass
-        return build_live_payload(data)
+        self._last_data = data
+        return build_live_payload(data, sorted(self._custom_tickers))
 
     def switch_currency(self, currency: str = "pln") -> dict[str, object]:
         """Rebuild report in the selected currency (PLN/USD/EUR) and reload inside the desktop window."""
@@ -523,7 +524,7 @@ class _LiveReportBridge:
         self._currency = currency
         csv_files = discover_export_files(self._data_dir())
         if not csv_files:
-            return {"ok": False, "error": "Brak wczytanych plików kont XTB."}
+            return {"ok": False, "error": "No XTB account exports have been loaded."}
         try:
             accounts = load_accounts(csv_files)
             data = collect_report_data(
@@ -546,12 +547,15 @@ class _LiveReportBridge:
 
         csv_files = discover_export_files(self._data_dir())
         if not csv_files:
-            return {"error": "Brak wczytanych plików kont XTB."}
+            return {"error": "No XTB account exports have been loaded."}
         try:
             accounts = load_accounts(csv_files)
-            nav, _, _ = build_nav_series(accounts, use_cache=True, live_prices=False)
-            nav = attach_deposits_to_nav(nav, accounts, use_cache=True)
-            return build_custom_benchmark_payload(
+            if self._last_data is not None and self._last_data.currency == currency:
+                nav = self._last_data.nav
+            else:
+                nav, _, _ = build_nav_series(accounts, use_cache=True, live_prices=False)
+                nav = attach_deposits_to_nav(nav, accounts, use_cache=True)
+            payload = build_custom_benchmark_payload(
                 accounts,
                 nav,
                 ticker,
@@ -559,31 +563,76 @@ class _LiveReportBridge:
                 use_cache=True,
                 refresh_latest=True,
             )
+            self._custom_tickers.add(ticker.strip().upper())
+            return payload
         except Exception as exc:
             return {"error": str(exc)}
 
 
-def open_report_window(html_path: Path) -> None:
+def _capture_readiness(window, ready_file: Path | None, report: bool) -> None:
+    """Signal actual WebView rendering to the optional native screenshot driver."""
+    if ready_file is None:
+        return
+
+    def loaded() -> None:
+        import json
+        import os
+        import time
+
+        expression = (
+            "document.querySelectorAll('.js-plotly-plot').length === 9 && "
+            "Array.from(document.querySelectorAll('.js-plotly-plot')).every(p => p._fullLayout)"
+            if report
+            else "document.getElementById('dropzone-heading') !== null"
+        )
+        for _ in range(150):
+            if window.evaluate_js(expression):
+                ready_file.parent.mkdir(parents=True, exist_ok=True)
+                ready_file.write_text(
+                    json.dumps({"pid": os.getpid(), "rendered": True, "report": report}),
+                    encoding="utf-8",
+                )
+                return
+            time.sleep(0.2)
+
+    window.events.loaded += loaded
+
+
+def open_report_window(
+    html_path: Path,
+    *,
+    width: int = 1280,
+    height: int = 860,
+    capture_ready: Path | None = None,
+) -> None:
     """Show ``html_path`` in a native window."""
     webview, gui = _prepare_webview()
     bridge = _LiveReportBridge(html_path)
     window = webview.create_window(
-        "Raport portfela XTB",
+        "XTB Portfolio Report",
         url=html_path.resolve().as_uri(),
-        width=1280,
-        height=860,
+        width=width,
+        height=height,
         min_size=(900, 640),
         background_color=BG,
         js_api=bridge,
     )
     bridge.set_window(window)
+    _capture_readiness(window, capture_ready, report=True)
     if gui:
         webview.start(gui=gui)
     else:
         webview.start()
 
 
-def open_desktop_app(currency: str = "pln", initial_zip: str | None = None) -> None:
+def open_desktop_app(
+    currency: str = "pln",
+    initial_zip: str | None = None,
+    *,
+    width: int = 1120,
+    height: int = 760,
+    capture_ready: Path | None = None,
+) -> None:
     """Open the modern HTML/CSS Fintech Dark Mode start screen in PyWebView and transition to the report."""
     webview, gui = _prepare_webview()
     start_dir = app_writable_root() / "data"
@@ -593,15 +642,16 @@ def open_desktop_app(currency: str = "pln", initial_zip: str | None = None) -> N
 
     bridge = _LiveReportBridge(None, currency=currency)
     window = webview.create_window(
-        "Analizator portfela XTB",
+        "XTB Portfolio Analyzer",
         url=start_file.resolve().as_uri(),
-        width=1120,
-        height=760,
+        width=width,
+        height=height,
         min_size=(760, 560),
         background_color=BG,
         js_api=bridge,
     )
     bridge.set_window(window)
+    _capture_readiness(window, capture_ready, report=False)
     if initial_zip:
         bridge.start_zip_path(initial_zip)
     if gui:
@@ -622,7 +672,7 @@ class AnalyzerApp:
         if root is None:
             root = self._make_root()
         self.root = root
-        self.root.title("Analizator portfela XTB")
+        self.root.title("XTB Portfolio Analyzer")
         self.root.configure(bg=BG)
         self.root.geometry("680x460")
         self.root.minsize(560, 410)
@@ -650,18 +700,30 @@ class AnalyzerApp:
     @staticmethod
     def _draw_rounded_rect(canvas, x1: int, y1: int, x2: int, y2: int, r: int, **kwargs) -> int:
         points = [
-            x1 + r, y1,
-            x2 - r, y1,
-            x2, y1,
-            x2, y1 + r,
-            x2, y2 - r,
-            x2, y2,
-            x2 - r, y2,
-            x1 + r, y2,
-            x1, y2,
-            x1, y2 - r,
-            x1, y1 + r,
-            x1, y1,
+            x1 + r,
+            y1,
+            x2 - r,
+            y1,
+            x2,
+            y1,
+            x2,
+            y1 + r,
+            x2,
+            y2 - r,
+            x2,
+            y2,
+            x2 - r,
+            y2,
+            x1 + r,
+            y2,
+            x1,
+            y2,
+            x1,
+            y2 - r,
+            x1,
+            y1 + r,
+            x1,
+            y1,
         ]
         return canvas.create_polygon(points, smooth=True, **kwargs)
 
@@ -673,7 +735,7 @@ class AnalyzerApp:
 
         tk.Label(
             outer,
-            text="Analizator portfela XTB",
+            text="XTB Portfolio Analyzer",
             bg=BG,
             fg=FG,
             font=("Segoe UI", 22, "bold"),
@@ -681,7 +743,7 @@ class AnalyzerApp:
 
         tk.Label(
             outer,
-            text="Wczytaj historię konta w formacie .zip, aby wygenerować raport.",
+            text="Import your account history as a ZIP file to generate a report.",
             bg=BG,
             fg=MUTED,
             justify="center",
@@ -718,7 +780,7 @@ class AnalyzerApp:
 
         drop = tk.Label(
             drop_card,
-            text="Upuść archiwum ZIP tutaj",
+            text="Drop your history ZIP here",
             bg=DROP_BG,
             fg=FG,
             font=("Segoe UI", 14, "bold"),
@@ -729,7 +791,7 @@ class AnalyzerApp:
 
         drop_sub = tk.Label(
             drop_card,
-            text="lub kliknij, aby wybrać z dysku",
+            text="or click to select a file",
             bg=DROP_BG,
             fg=MUTED,
             font=("Segoe UI", 10),
@@ -740,7 +802,7 @@ class AnalyzerApp:
 
         btn = tk.Button(
             drop_card,
-            text="Wybierz z dysku",
+            text="Choose file",
             command=self._browse,
             bg=ACCENT,
             fg="#FFFFFF",
@@ -802,10 +864,18 @@ class AnalyzerApp:
     @staticmethod
     def _draw_cloud_icon(canvas) -> None:
         canvas.delete("all")
-        canvas.create_arc(10, 12, 32, 34, start=30, extent=170, style="arc", outline=ACCENT, width=2.4)
-        canvas.create_arc(22, 8, 44, 30, start=0, extent=160, style="arc", outline=ACCENT, width=2.4)
-        canvas.create_arc(6, 18, 22, 34, start=90, extent=180, style="arc", outline=ACCENT, width=2.4)
-        canvas.create_arc(30, 16, 46, 34, start=-90, extent=180, style="arc", outline=ACCENT, width=2.4)
+        canvas.create_arc(
+            10, 12, 32, 34, start=30, extent=170, style="arc", outline=ACCENT, width=2.4
+        )
+        canvas.create_arc(
+            22, 8, 44, 30, start=0, extent=160, style="arc", outline=ACCENT, width=2.4
+        )
+        canvas.create_arc(
+            6, 18, 22, 34, start=90, extent=180, style="arc", outline=ACCENT, width=2.4
+        )
+        canvas.create_arc(
+            30, 16, 46, 34, start=-90, extent=180, style="arc", outline=ACCENT, width=2.4
+        )
         canvas.create_line(14, 34, 21, 34, fill=ACCENT, width=2.4)
         canvas.create_line(31, 34, 38, 34, fill=ACCENT, width=2.4)
         canvas.create_line(26, 38, 26, 21, fill=ACCENT, width=2.6)
@@ -880,7 +950,7 @@ class AnalyzerApp:
                 seen.append(path)
         if not seen:
             self._show_progress_area()
-            self.status.set("Upuść archiwum ZIP z historią kont.")
+            self.status.set("Drop a ZIP containing your account history.")
             return
         self._choose(seen[0])
 
@@ -890,8 +960,8 @@ class AnalyzerApp:
         from tkinter import filedialog
 
         path = filedialog.askopenfilename(
-            title="Historia kont XTB",
-            filetypes=[("Archiwum ZIP", "*.zip"), ("Wszystkie pliki", "*.*")],
+            title="XTB account history",
+            filetypes=[("ZIP archive", "*.zip"), ("All files", "*.*")],
         )
         if path:
             self._choose(path)
@@ -913,7 +983,7 @@ class AnalyzerApp:
         self._busy = True
         self._show_progress_area()
         currency = self.currency.get()
-        self._set_progress(0.02, "Liczenie statystyk, porównań i benchmarków…")
+        self._set_progress(0.02, "Calculating metrics and benchmark comparisons...")
         if self.progress is not None:
             self.progress.configure(mode="indeterminate")
             self.progress.start(12)
@@ -937,7 +1007,7 @@ class AnalyzerApp:
                     on_progress=on_progress,
                 )
             except Exception as exc:  # noqa: BLE001 — show the message in the window
-                self.root.after(0, lambda: self._fail(exc))
+                self.root.after(0, lambda error=exc: self._fail(error))
                 return
             self.root.after(0, lambda: self._present(report))
 
@@ -956,7 +1026,7 @@ class AnalyzerApp:
     ) -> Path:
         path = Path(path)
         if path.suffix.lower() != ".zip":
-            raise ZipImportError("Wybierz ZIP z historią kont.")
+            raise ZipImportError("Select your account-history ZIP.")
         root = upload_root or (app_writable_root() / "data" / "uploads")
         work = root / uuid.uuid4().hex
         report = report_from_zip_path(
@@ -982,7 +1052,7 @@ class AnalyzerApp:
                 pass
             self.progress.configure(mode="determinate")
             self.progress["value"] = 100
-        self.status.set("Otwieram raport…")
+        self.status.set("Opening report...")
         self.root.update_idletasks()
         try:
             self.root.withdraw()
@@ -1008,23 +1078,96 @@ class AnalyzerApp:
         try:
             from tkinter import messagebox
 
-            messagebox.showerror("Nie udało się policzyć raportu", message)
+            messagebox.showerror("Report generation failed", message)
         except Exception:
             pass
 
 
 def main(argv: list[str] | None = None) -> int:
-    ensure_app_cwd()
     parser = argparse.ArgumentParser(
         prog="xtb_analyzer.desktop",
-        description="Okno aplikacji: wgraj ZIP z historią XTB i zobacz raport.",
+        description="Import an XTB history ZIP and view your portfolio report.",
     )
     parser.add_argument("--currency", default="pln", choices=["pln", "usd", "eur"])
-    parser.add_argument("--zip", dest="zip_path", default=None, help="od razu otwórz ten plik ZIP")
+    parser.add_argument(
+        "--zip", dest="zip_path", default=None, help="open this ZIP file on startup"
+    )
+    parser.add_argument(
+        "--demo", action="store_true", help="Open the offline synthetic demo in the desktop window."
+    )
+    parser.add_argument("--check-install", metavar="JSON", help=argparse.SUPPRESS)
+    parser.add_argument("--width", type=int, default=None, help="Initial window width.")
+    parser.add_argument("--height", type=int, default=None, help="Initial window height.")
+    parser.add_argument("--capture-ready", type=Path, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
+    if args.check_install:
+        import io
+        import json
+
+        import pandas as pd
+        import plotly
+        import pyarrow
+        from plotly.offline import get_plotlyjs
+
+        _prepare_webview()
+        payload = {"ok": False}
+        try:
+            buffer = io.BytesIO()
+            pd.DataFrame({"value": [1.25]}).to_parquet(buffer)
+            buffer.seek(0)
+            assert pd.read_parquet(buffer).iloc[0, 0] == 1.25
+            assert asset_path("assets", "app.ico").is_file()
+            if is_frozen():
+                from xtb_analyzer.market_data import MarketData
+                from xtb_analyzer.parser import discover_export_files, load_accounts
+
+                sample_dir = resource_root() / "examples"
+                assert len(load_accounts(discover_export_files(sample_dir))) == 2
+                assert not MarketData.from_examples(sample_dir).prices.empty
+            assert len(get_plotlyjs()) > 100000
+            if sys.platform == "win32":
+                import webview.platforms.edgechromium  # noqa: F401
+            payload = {
+                "ok": True,
+                "python": sys.version,
+                "plotly": plotly.__version__,
+                "pyarrow": pyarrow.__version__,
+            }
+        except Exception as exc:
+            payload["error"] = str(exc)
+        Path(args.check_install).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return 0 if payload["ok"] else 1
+
+    ensure_app_cwd()
+
+    if args.demo:
+        from xtb_analyzer.market_data import MarketData
+        from xtb_analyzer.report import generate_report
+
+        sample_dir = resource_root() / "examples" if is_frozen() else Path("examples")
+        report = generate_report(
+            data_dir=sample_dir,
+            output_dir="output/demo",
+            currency=args.currency,
+            market_data=MarketData.from_examples(sample_dir),
+            refresh_latest=False,
+        )
+        open_report_window(
+            report,
+            width=args.width or 1280,
+            height=args.height or 860,
+            capture_ready=args.capture_ready,
+        )
+        return 0
 
     try:
-        open_desktop_app(currency=args.currency, initial_zip=args.zip_path)
+        open_desktop_app(
+            currency=args.currency,
+            initial_zip=args.zip_path,
+            width=args.width or 1120,
+            height=args.height or 760,
+            capture_ready=args.capture_ready,
+        )
         return 0
     except Exception:
         app = AnalyzerApp()

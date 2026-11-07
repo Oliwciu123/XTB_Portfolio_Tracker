@@ -60,9 +60,10 @@ Stock purchase;Example;;STOCK;2025-12-02 10:00:00;-21,00;3;OPEN BUY APP.US 2 @ 1
 
 
 def test_pln_conversion_counts_amount_as_pln_deposit():
+    from datetime import datetime
+
     from xtb_analyzer.flows import extract_deposits
     from xtb_analyzer.models import Account, Transaction
-    from datetime import datetime
 
     account = Account(
         account_id="33333333",
