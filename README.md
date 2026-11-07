@@ -61,6 +61,8 @@ See the [user guide](docs/USER_GUIDE.md) for desktop and portable Windows usage.
 
 Actual application renders using the seeded demo. Browser images are captured at
 1600×1000 with 2× pixel density; desktop images capture the real pywebview HWND.
+The captures use the current application panels and controls without adding,
+hiding, or restyling features for the screenshots.
 
 **Reconstructed NAV and funding-neutral drawdown.**
 ![NAV and TWR drawdown](docs/images/nav-drawdown.png)
