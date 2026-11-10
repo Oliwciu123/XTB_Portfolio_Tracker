@@ -688,6 +688,7 @@ def _parse_transactions(
                 price=price,
                 comment=comment,
                 realized_pnl=realized_pnl,
+                raw_type=raw_type,
             )
         )
     return transactions

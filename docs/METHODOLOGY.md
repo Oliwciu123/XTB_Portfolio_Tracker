@@ -83,6 +83,24 @@ income. Local P&L is translated at current FX, so it is not a tax-basis calculat
 Position, sector and currency allocations describe invested holdings and exclude
 cash. Sector classifications depend on provider metadata.
 
+## Polish PIT-38 tax settlement
+
+The `PIT-38` section provides an educational Polish tax settlement across calendar
+years (including current year-to-date estimates):
+
+- **NBP Table A `D-1` conversion:** acquisition costs, disposal proceeds, commissions,
+  gross dividends and foreign withholding taxes are translated into PLN using the
+  official NBP Table A mid rate from the last business day strictly preceding the
+  transaction date (`Art. 11a` PIT), looking back across weekends and Polish holidays.
+- **FIFO capital gains (`Section C`, `Art. 30b` PIT):** sales match oldest open lots
+  first within each sub-account and symbol. Partial lot sales pro-rate acquisition
+  principal and buy-side commissions; stock splits adjust lot share counts while
+  preserving original `D-1` PLN cost basis.
+- **Dividends & foreign WHT (`Art. 30a` PIT):** gross dividends incur Poland's 19%
+  flat rate; foreign tax withheld at source (`podatek u źródła`) is credited up to a
+  19% cap per dividend payment, yielding net Polish surcharge (`do dopłaty`). Section C
+  capital losses do not offset dividend tax.
+
 ## Data and refresh
 
 Historical and current prices can be stale or revised. A ten-second desktop

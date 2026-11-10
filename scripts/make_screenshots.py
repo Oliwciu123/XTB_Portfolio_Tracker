@@ -43,7 +43,7 @@ def settled(page: Page) -> None:
     page.wait_for_function(
         """() => {
             const plots = [...document.querySelectorAll('.js-plotly-plot')];
-            return plots.length === 7 && plots.every(p => p._fullLayout && p.calcdata);
+            return plots.length === 8 && plots.every(p => p._fullLayout && p.calcdata);
         }"""
     )
     page.evaluate(

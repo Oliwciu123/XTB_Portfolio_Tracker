@@ -1087,3 +1087,105 @@ def plot_company_pnl(company_pnl: pd.DataFrame, currency: str = "pln") -> go.Fig
         }
     )
     return fig
+
+
+def plot_monthly_deposits(
+    deposit_ops: pd.DataFrame,
+    currency: str = "pln",
+    *,
+    years: list[int] | set[int] | None = None,
+    by_calendar_month: bool = False,
+) -> go.Figure:
+    """Interactive monthly bar histogram of inbound deposited capital."""
+    from xtb_analyzer.flows import aggregate_deposits_monthly
+
+    curr_label = _currency_label(currency)
+    agg = aggregate_deposits_monthly(deposit_ops, years=years, by_calendar_month=by_calendar_month)
+    if agg.empty or float(agg["total_amount"].sum()) <= 0:
+        fig = go.Figure()
+        fig.update_layout(
+            **CHART_LAYOUT,
+            title=dict(
+                text=f"Monthly deposit histogram ({curr_label}) – no deposits",
+                x=0.5,
+                xanchor="center",
+            ),
+            height=380,
+        )
+        return fig
+
+    total_deposited = float(agg["total_amount"].sum())
+    total_ops = int(agg["deposit_count"].sum())
+    active_months = int((agg["total_amount"] > 0).sum())
+    avg_monthly = total_deposited / active_months if active_months > 0 else 0.0
+
+    if by_calendar_month:
+        x_vals = agg["month_label"].tolist()
+        customdata = [
+            [int(r["month"]), str(r["month_label"]), int(r["deposit_count"]), "calendar"]
+            for _, r in agg.iterrows()
+        ]
+        hover = (
+            "<b>%{x}</b><br>"
+            f"Deposited: <b>%{{y:,.2f}} {curr_label}</b><br>"
+            "Operations: <b>%{customdata[2]}</b><extra></extra>"
+        )
+        scope_label = "Calendar months summed across selected years"
+    else:
+        x_vals = agg["year_month"].tolist()
+        customdata = [
+            [str(r["year_month"]), str(r["label"]), int(r["deposit_count"]), int(r["month"])]
+            for _, r in agg.iterrows()
+        ]
+        hover = (
+            "<b>%{customdata[1]}</b> (%{x})<br>"
+            f"Deposited: <b>%{{y:,.2f}} {curr_label}</b><br>"
+            "Operations: <b>%{customdata[2]}</b><extra></extra>"
+        )
+        scope_label = "Chronological monthly deposits · click any bar to inspect"
+
+    fig = go.Figure(
+        go.Bar(
+            x=x_vals,
+            y=agg["total_amount"].astype(float).tolist(),
+            name=f"Deposits ({curr_label})",
+            marker=dict(color="#38bdf8", line=dict(width=0), cornerradius=4),
+            customdata=customdata,
+            hovertemplate=hover,
+        )
+    )
+    fig.update_layout(
+        {
+            **CHART_LAYOUT,
+            "hovermode": "closest",
+            "title": dict(
+                text=(
+                    f"Monthly deposited capital ({curr_label})<br>"
+                    f"<sup style='color:#94a3b8'>{scope_label} | "
+                    f"Total: <b>{_format_decimal(total_deposited, 2)} {curr_label}</b> | "
+                    f"Avg active month: <b>{_format_decimal(avg_monthly, 2)} {curr_label}</b> | "
+                    f"Deposits: <b>{total_ops}</b></sup>"
+                ),
+                x=0.5,
+                xanchor="center",
+            ),
+            "height": 410,
+            "showlegend": False,
+            "margin": dict(l=68, r=32, t=88, b=68),
+            "yaxis": dict(
+                title=f"Deposited ({curr_label})",
+                gridcolor=CHART_COLORS["grid"],
+                tickformat=",.0f",
+                zeroline=True,
+                zerolinecolor="rgba(148, 163, 184, 0.45)",
+            ),
+            "xaxis": dict(
+                title="",
+                type="category",
+                tickangle=-35 if not by_calendar_month and len(x_vals) > 18 else 0,
+                nticks=14 if not by_calendar_month else 12,
+                gridcolor="rgba(148, 163, 184, 0.08)",
+            ),
+        }
+    )
+    return fig

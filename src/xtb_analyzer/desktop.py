@@ -580,7 +580,7 @@ def _capture_readiness(window, ready_file: Path | None, report: bool) -> None:
         import time
 
         expression = (
-            "document.querySelectorAll('.js-plotly-plot').length === 7 && "
+            "document.querySelectorAll('.js-plotly-plot').length === 8 && "
             "Array.from(document.querySelectorAll('.js-plotly-plot')).every(p => p._fullLayout)"
             if report
             else "document.getElementById('dropzone-heading') !== null"
@@ -1127,6 +1127,8 @@ def main(argv: list[str] | None = None) -> int:
             assert len(get_plotlyjs()) > 100000
             if sys.platform == "win32":
                 import webview.platforms.edgechromium  # noqa: F401
+            elif sys.platform == "darwin":
+                import webview.platforms.cocoa  # noqa: F401
             payload = {
                 "ok": True,
                 "python": sys.version,

@@ -1,10 +1,13 @@
 # XTB Portfolio Analyzer
 
-[![CI](https://github.com/Oliwciu123/xtb_portfolio_analyzer/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Oliwciu123/xtb_portfolio_analyzer/actions/workflows/ci.yml)
+[![CI](https://github.com/Oliwciu123/XTB_Portfolio_Tracker/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/Oliwciu123/XTB_Portfolio_Tracker/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-22c55e.svg)](LICENSE)
 
-[Download for Windows](https://github.com/Oliwciu123/xtb_portfolio_analyzer/releases/latest) — portable ZIP, no Python needed.
+**Portable downloads (no Python needed):**
+[Download for Windows (`XTBPortfolioAnalyzer-Windows.zip`)](https://github.com/Oliwciu123/XTB_Portfolio_Tracker/releases/latest/download/XTBPortfolioAnalyzer-Windows.zip) ·
+[Download for macOS (`XTBPortfolioAnalyzer-macOS.zip`)](https://github.com/Oliwciu123/XTB_Portfolio_Tracker/releases/latest/download/XTBPortfolioAnalyzer-macOS.zip) ·
+[Latest GitHub Release](https://github.com/Oliwciu123/XTB_Portfolio_Tracker/releases/latest)
 
 ![Portfolio dashboard: KPIs and reconstructed NAV](docs/images/dashboard.png)
 
@@ -22,25 +25,39 @@ tickers and index names label simulated paths, not actual historical returns.
 
 - ROI, money-weighted return (XIRR) and daily time-weighted return (TWR).
 - NAV reconstruction from cash operations, fractional positions and stock splits.
-- Volatility, drawdown, Sharpe, Sortino, historical VaR and benchmark relations.
+- Volatility, drawdown, Sharpe, Sortino, Calmar, historical VaR, win rate, profit factor and benchmark relations, with interactive plain-English KPI definitions, examples and reference benchmarks.
+- Deposit analytics with monthly capital histograms, single- and multi-year filters, month-level operation drill-downs and a dynamic Top 10 deposit months ranking.
+- Polish PIT-38 tax settlement: strict FIFO lot matching, official `D-1` NBP Table A currency conversions (with weekend/holiday lookback), brokerage commissions and foreign dividend withholding-tax (`podatek u źródła`) credits.
 - PLN FX attribution, income, taxes, company P&L and holdings allocation.
-- Interactive, self-contained HTML reports with PNG and comparison CSV export.
+- Interactive, self-contained HTML reports with PNG and comparison/tax CSV export.
 - Desktop ZIP import, progress feedback and live refresh; custom Yahoo symbols.
 
 ## No Python needed
 
-1. Download `XTBPortfolioAnalyzer-Windows.zip` from the Windows release link above.
+### Windows
+1. Download [`XTBPortfolioAnalyzer-Windows.zip`](https://github.com/Oliwciu123/XTB_Portfolio_Tracker/releases/latest/download/XTBPortfolioAnalyzer-Windows.zip) from the latest GitHub Release.
 2. Extract everything, including `_internal`, into one folder.
 3. Open the extracted `XTBPortfolioAnalyzer` folder and run `XTBPortfolioAnalyzer.exe`.
 
-For the offline demo, open a terminal in that folder and run:
+For the offline demo on Windows, open a terminal in that folder and run:
 
 ```powershell
 .\XTBPortfolioAnalyzer.exe --demo
 ```
 
-Requires Windows 10/11 (64-bit) and Microsoft Edge WebView2. The app is unsigned.
-An internet connection is needed for market data; the bundled demo runs offline.
+### macOS
+1. Download [`XTBPortfolioAnalyzer-macOS.zip`](https://github.com/Oliwciu123/XTB_Portfolio_Tracker/releases/latest/download/XTBPortfolioAnalyzer-macOS.zip) from the latest GitHub Release.
+2. Extract the archive and open `XTBPortfolioAnalyzer/XTBPortfolioAnalyzer.app` (right-click and choose **Open** on first launch).
+
+For the offline demo on macOS:
+
+```sh
+./XTBPortfolioAnalyzer/XTBPortfolioAnalyzer.app/Contents/MacOS/XTBPortfolioAnalyzer --demo
+```
+
+Requires Windows 10/11 (64-bit) with Microsoft Edge WebView2, or macOS 13+ (Apple Silicon).
+Both portable builds are unsigned. An internet connection is needed for market data;
+the bundled demo runs offline.
 
 ## Quickstart
 
@@ -48,8 +65,8 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then run 
 the repository root on Windows, macOS or Linux:
 
 ```sh
-git clone https://github.com/Oliwciu123/xtb_portfolio_analyzer.git
-cd xtb_portfolio_analyzer
+git clone https://github.com/Oliwciu123/XTB_Portfolio_Tracker.git
+cd XTB_Portfolio_Tracker
 uv sync
 uv run xtb-analyzer --demo
 ```
@@ -73,7 +90,7 @@ uv run xtb-analyzer --data-dir data --currency pln --open
 
 Real-data analysis fetches Yahoo Finance prices and NBP FX over the internet.
 `--no-live` disables current quotes; it does not disable historical downloads.
-See the [user guide](docs/USER_GUIDE.md) for desktop and portable Windows usage.
+See the [user guide](docs/USER_GUIDE.md) for desktop and portable usage.
 
 ## Screenshots
 
@@ -125,7 +142,7 @@ flowchart LR
     B --> C[Cash, positions and external flows]
     D[Historical prices and FX] --> E[Daily NAV]
     C --> E
-    E --> F[Returns, risk and FX attribution]
+    E --> F[Returns, risk, FX attribution and PIT-38]
     F --> G[Interactive HTML report]
     G --> H[Browser or desktop window]
 ```
@@ -151,6 +168,8 @@ fictional market series. Private exports, reports and caches are gitignored.
 - **Risk:** daily TWR observations; volatility uses `√252`, default risk-free rate 0%.
 - **Benchmarks:** hypothetical purchases and sales with the same external flows,
   converted to the report currency. The comparison chart shows ROI.
+- **PIT-38:** strict per-account FIFO lot matching and dividend WHT credit (capped at 19%
+  per payment), translated into PLN at the official `D-1` NBP Table A mid rate.
 
 Assumptions, FX decomposition and edge cases are in
 [METHODOLOGY.md](docs/METHODOLOGY.md). The mathematical audit and the legacy ROI
@@ -159,12 +178,12 @@ fix are recorded in [AUDIT.md](docs/AUDIT.md).
 ## Project structure
 
 ```text
-src/xtb_analyzer/   Parser, financial engine, report and desktop app
-tests/             Reference metrics, parser and UI regression tests
+src/xtb_analyzer/   Parser, financial/PIT-38 engine, report and desktop app
+tests/             Reference metrics, parser, PIT-38 and UI regression tests
 examples/          Entirely fictional account and market data
 scripts/           Sample generation and real screenshot capture
-packaging/         PyInstaller specification and Windows release builder
-docs/              Methodology, user guide, CV material and screenshots
+packaging/         PyInstaller specification and Windows/macOS release builder
+docs/              Methodology, user guide, release notes and screenshots
 notebooks/         Optional offline exploration of the same engine
 ```
 
@@ -193,11 +212,12 @@ uv run python scripts/generate_demo_data.py --seed 42 --end-date 2026-11-07
 Small parser fixtures are maintained separately by `scripts/generate_test_fixtures.py`.
 
 CI defines lint, formatting, tests and demo execution on Ubuntu, Windows and
-macOS with Python 3.10 and 3.13. A separate job renders screenshots. Dependencies
-are locked in `uv.lock`; use `uv sync --locked` to reproduce them.
-See the [verification record](docs/VERIFICATION.md) for checks actually run locally.
-The consolidated commit history and its actual feature dates are described in
-[HISTORY.md](docs/HISTORY.md).
+macOS with Python 3.10 and 3.13. A separate job renders screenshots. Tagged `v*`
+pushes trigger `.github/workflows/release.yml` to build and publish portable
+Windows and macOS release archives. Dependencies are locked in `uv.lock`; use
+`uv sync --locked` to reproduce them. See the [verification record](docs/VERIFICATION.md)
+for checks actually run locally. The consolidated commit history and its actual
+feature dates are described in [HISTORY.md](docs/HISTORY.md).
 
 ## Limitations
 
@@ -206,15 +226,17 @@ The consolidated commit history and its actual feature dates are described in
 - Market data may be delayed, unavailable or revised. Polling does not guarantee new quotes.
 - Benchmarks need sufficient Yahoo history and supported quote currency/FX. They exclude
   commissions and taxes; futures are price comparisons without a margin or roll model.
+- PIT-38 calculations are educational estimates from exported cash operations; verify against
+  official PIT-8C forms and tax counsel before filing.
 - The demo is illustrative, not an investment strategy or a record of actual performance.
-- Source-based desktop commands support Windows and macOS; the portable build script targets
-  Windows. Native desktop rendering depends on the platform's webview runtime.
+- Portable PyInstaller release archives are built for Windows and macOS; binaries are unsigned
+  and native desktop rendering depends on the platform's webview runtime.
 
 ## Roadmap
 
 - Add fixtures for more broker export versions and corporate actions.
 - Add explicit intraday cash-flow timing where source data permits it.
-- Automate signed desktop release artifacts for Windows and macOS.
+- Code-sign and notarize Windows and macOS desktop release artifacts.
 
 ## License
 

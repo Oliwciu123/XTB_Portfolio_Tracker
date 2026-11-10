@@ -235,7 +235,8 @@ def test_full_report_and_live_charts_share_financial_snapshot(monkeypatch, fx, t
     assert data.benchmarks["sp500"].iloc[-1] == pytest.approx(4200)
     report = render_html_report(data)
     live = build_live_payload(data)
-    assert len(live["charts"]) == 7
+    assert len(live["charts"]) == 8
+    assert "chart-deposits" in live["charts"]
     for removed in ("chart-drawdown", "chart-fx"):
         assert removed not in live["charts"]
         assert removed not in report

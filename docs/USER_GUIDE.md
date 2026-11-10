@@ -59,8 +59,9 @@ is needed for the packaged build. Market-data access still needs internet.
 
 Starting the executable with `--demo` opens the bundled fictional example offline.
 
-On macOS use the uv desktop command; an automated signed macOS bundle is not yet
-provided. Native webview support depends on the platform runtime.
+On macOS, extract `XTBPortfolioAnalyzer-macOS.zip` and open `XTBPortfolioAnalyzer.app`
+(right-click and select **Open** on first launch, as the app bundle is unsigned). Native
+webview rendering uses macOS WebKit; source runs via `uv` are also supported.
 
 ## Local files
 

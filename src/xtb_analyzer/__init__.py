@@ -1,5 +1,7 @@
 """XTB portfolio analyzer."""
 
+__version__ = "1.1.0"
+
 from xtb_analyzer.attribution import FxAttribution, compute_fx_attribution
 from xtb_analyzer.benchmark import (
     build_benchmark_suite,
@@ -17,6 +19,7 @@ from xtb_analyzer.charts import (
     plot_currency_allocation,
     plot_fx_attribution_waterfall,
     plot_holdings_allocation,
+    plot_monthly_deposits,
     plot_monthly_returns_heatmap,
     plot_nav_with_deposits,
     plot_return_dashboard,
@@ -26,11 +29,16 @@ from xtb_analyzer.charts import (
     prepare_return_comparison_data,
     show_return_comparison_widget,
 )
+from xtb_analyzer.definitions import METRIC_DEFINITIONS, MetricDefinition, MetricRange
 from xtb_analyzer.flows import (
+    aggregate_deposits_monthly,
     analyze_conversion_losses,
     attach_deposits_to_nav,
     conversion_summary,
+    extract_deposit_operations,
     extract_deposits,
+    filter_deposit_operations,
+    top_deposit_months,
 )
 from xtb_analyzer.metrics import (
     format_metrics_table,
@@ -50,15 +58,35 @@ from xtb_analyzer.parser import (
 from xtb_analyzer.report import collect_report_data, generate_report, render_html_report
 from xtb_analyzer.returns import ReturnMeasures, compute_return_measures, twr_daily_returns, xirr
 from xtb_analyzer.risk import RiskStats, compute_risk_stats
+from xtb_analyzer.tax import (
+    DividendTaxEntry,
+    FifoLotMatch,
+    NbpRateLookup,
+    Pit38Report,
+    Pit38YearSummary,
+    compute_pit38_report,
+    compute_trade_stats,
+    lookup_nbp_d_minus_1_rate,
+)
 
 __all__ = [
+    "__version__",
     "Account",
+    "DividendTaxEntry",
+    "FifoLotMatch",
     "FxAttribution",
+    "METRIC_DEFINITIONS",
+    "MetricDefinition",
+    "MetricRange",
+    "NbpRateLookup",
     "PLOTLY_SHOW_CONFIG",
+    "Pit38Report",
+    "Pit38YearSummary",
     "ReturnComparisonData",
     "ReturnMeasures",
     "RiskStats",
     "Transaction",
+    "aggregate_deposits_monthly",
     "analyze_conversion_losses",
     "attach_deposits_to_nav",
     "build_benchmark_suite",
@@ -68,13 +96,17 @@ __all__ = [
     "build_sp500_deposit_benchmark",
     "collect_report_data",
     "compute_fx_attribution",
+    "compute_pit38_report",
     "compute_return_measures",
     "compute_risk_stats",
+    "compute_trade_stats",
     "conversion_summary",
     "default_data_dir",
     "describe_export_discovery",
     "discover_export_files",
+    "extract_deposit_operations",
     "extract_deposits",
+    "filter_deposit_operations",
     "find_project_root",
     "format_metrics_table",
     "format_positions_table",
@@ -82,12 +114,14 @@ __all__ = [
     "generate_report",
     "load_accounts",
     "load_csv",
+    "lookup_nbp_d_minus_1_rate",
     "plot_allocation_donut",
     "plot_benchmark_comparison",
     "plot_conversion_losses",
     "plot_currency_allocation",
     "plot_fx_attribution_waterfall",
     "plot_holdings_allocation",
+    "plot_monthly_deposits",
     "plot_monthly_returns_heatmap",
     "plot_nav_with_deposits",
     "plot_return_dashboard",
@@ -98,6 +132,7 @@ __all__ = [
     "prepare_return_comparison_data",
     "render_html_report",
     "show_return_comparison_widget",
+    "top_deposit_months",
     "twr_daily_returns",
     "xirr",
 ]

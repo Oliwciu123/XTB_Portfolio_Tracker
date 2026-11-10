@@ -1,8 +1,9 @@
 # -*- mode: python ; coding: utf-8 -*-
-# PyInstaller one-folder build for the Windows desktop app.
-# Build on Windows:  build_windows.bat
-# Output:            dist\XTBPortfolioAnalyzer\
+# PyInstaller build specification for the Windows and macOS desktop app.
+# Windows:  build_windows.bat -> dist\XTBPortfolioAnalyzer\
+# macOS:    python packaging/build_release.py -> dist/XTBPortfolioAnalyzer.app
 
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, collect_data_files
@@ -20,14 +21,37 @@ datas = [
 datas += [
     (str(ROOT / "examples" / name), "examples")
     for name in (
-        "XTB_USD_cs.xlsx", "XTB_EUR_cs.xlsx", "prices.csv", "fx.csv", "benchmarks.csv",
-        "instruments.csv", "benchmark_metadata.csv", "demo.json",
+        "XTB_USD_cs.xlsx",
+        "XTB_EUR_cs.xlsx",
+        "prices.csv",
+        "fx.csv",
+        "benchmarks.csv",
+        "instruments.csv",
+        "benchmark_metadata.csv",
+        "demo.json",
     )
 ]
 binaries = []
+if sys.platform == "win32":
+    platform_hidden = ["webview.platforms.edgechromium"]
+elif sys.platform == "darwin":
+    platform_hidden = [
+        "webview.platforms.cocoa",
+        "objc",
+        "Foundation",
+        "AppKit",
+        "Cocoa",
+        "WebKit",
+        "Quartz",
+        "Security",
+        "UniformTypeIdentifiers",
+    ]
+else:
+    platform_hidden = []
+
 hiddenimports = [
     "webview",
-    "webview.platforms.edgechromium",
+    *platform_hidden,
     "tkinter",
     "tkinter.ttk",
     "tkinter.filedialog",
@@ -60,7 +84,16 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["notebook", "ipykernel", "ipywidgets", "matplotlib", "pytest", "IPython", "scipy", "sympy"],
+    excludes=[
+        "notebook",
+        "ipykernel",
+        "ipywidgets",
+        "matplotlib",
+        "pytest",
+        "IPython",
+        "scipy",
+        "sympy",
+    ],
     win_no_prefer_redirects=False,
     win_private_assemblies=False,
     cipher=block_cipher,
@@ -68,6 +101,14 @@ a = Analysis(
 )
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
+
+if sys.platform == "win32":
+    app_icon = str(ASSETS / "app.ico") if (ASSETS / "app.ico").is_file() else None
+elif sys.platform == "darwin":
+    icns_file = ROOT / "build" / "app.icns"
+    app_icon = str(icns_file) if icns_file.is_file() else None
+else:
+    app_icon = None
 
 exe = EXE(
     pyz,
@@ -85,7 +126,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon=str(ASSETS / "app.ico") if (ASSETS / "app.ico").is_file() else None,
+    icon=app_icon,
 )
 
 coll = COLLECT(
@@ -98,3 +139,11 @@ coll = COLLECT(
     upx_exclude=[],
     name="XTBPortfolioAnalyzer",
 )
+
+if sys.platform == "darwin":
+    app = BUNDLE(
+        coll,
+        name="XTBPortfolioAnalyzer.app",
+        icon=app_icon,
+        bundle_identifier="io.github.oliwciu123.xtbportfolioanalyzer",
+    )

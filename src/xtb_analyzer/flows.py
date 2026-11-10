@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from decimal import Decimal
 
@@ -13,6 +14,7 @@ from xtb_analyzer.fx import convert_value, fetch_fx_rates
 from xtb_analyzer.models import Account
 
 CONVERSION_FEE_RATE = Decimal("0.005")
+MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 @dataclass
@@ -24,6 +26,8 @@ class Deposit:
     pln_spent: Decimal
     xtb_rate: Decimal
     is_conversion: bool = True
+    tx_id: str = ""
+    comment: str = ""
 
 
 def first_deposit_date(accounts: list[Account]) -> pd.Timestamp | None:
@@ -82,6 +86,8 @@ def extract_deposits(accounts: list[Account], fx: pd.DataFrame | None = None) ->
                     pln_spent=pln_spent,
                     xtb_rate=used_rate,
                     is_conversion=bool(conversion),
+                    tx_id=tx.id,
+                    comment=tx.comment,
                 )
             )
     return sorted(deposits, key=lambda item: item.timestamp)
@@ -209,3 +215,231 @@ def conversion_summary(losses: pd.DataFrame) -> dict[str, float]:
         "total_loss_pln": total_loss,
         "avg_loss_pct": total_loss / total_pln if total_pln else 0.0,
     }
+
+
+_DEPOSIT_OPS_COLUMNS = [
+    "tx_id",
+    "timestamp",
+    "date",
+    "year",
+    "month",
+    "month_name",
+    "year_month",
+    "account_id",
+    "currency",
+    "amount_foreign",
+    "pln_spent",
+    "amount",
+    "report_currency",
+    "xtb_rate",
+    "is_conversion",
+    "comment",
+]
+
+
+def extract_deposit_operations(
+    accounts: list[Account],
+    currency: str = "pln",
+    fx: pd.DataFrame | None = None,
+    use_cache: bool = True,
+) -> pd.DataFrame:
+    """Extract inbound external deposit operations converted into ``currency``."""
+    target_curr = currency.upper()
+    deposits = [d for d in extract_deposits(accounts, fx=fx) if d.amount_foreign > 0]
+    if not deposits:
+        return pd.DataFrame(columns=_DEPOSIT_OPS_COLUMNS)
+
+    if target_curr != "PLN" and fx is None and any(d.currency != target_curr for d in deposits):
+        start = (
+            (pd.Timestamp(deposits[0].timestamp.date()) - pd.Timedelta(days=7)).date().isoformat()
+        )
+        end = (
+            (pd.Timestamp(deposits[-1].timestamp.date()) + pd.Timedelta(days=1)).date().isoformat()
+        )
+        fx = fetch_fx_rates(start=start, end=end, use_cache=use_cache)
+
+    rows: list[dict[str, object]] = []
+    for dep in deposits:
+        ts = pd.Timestamp(dep.timestamp)
+        day = pd.Timestamp(ts.date())
+        if target_curr == "PLN":
+            amount_report = float(dep.pln_spent)
+        elif dep.currency.upper() == target_curr:
+            amount_report = float(dep.amount_foreign)
+        else:
+            available = fx.loc[:day] if fx is not None and not fx.empty else pd.DataFrame()
+            fx_row = available.iloc[-1] if not available.empty else pd.Series(dtype=float)
+            amount_report = convert_value(
+                float(dep.amount_foreign), dep.currency.upper(), target_curr, fx_row
+            )
+        month_num = int(ts.month)
+        rows.append(
+            {
+                "tx_id": dep.tx_id,
+                "timestamp": ts,
+                "date": ts.strftime("%Y-%m-%d"),
+                "year": int(ts.year),
+                "month": month_num,
+                "month_name": MONTH_ABBR[month_num - 1],
+                "year_month": ts.strftime("%Y-%m"),
+                "account_id": dep.account_id,
+                "currency": dep.currency.upper(),
+                "amount_foreign": float(dep.amount_foreign),
+                "pln_spent": float(dep.pln_spent),
+                "amount": float(amount_report),
+                "report_currency": target_curr,
+                "xtb_rate": float(dep.xtb_rate),
+                "is_conversion": bool(dep.is_conversion),
+                "comment": dep.comment,
+            }
+        )
+    return pd.DataFrame(rows, columns=_DEPOSIT_OPS_COLUMNS)
+
+
+def filter_deposit_operations(
+    deposit_ops: pd.DataFrame,
+    *,
+    years: Iterable[int] | None = None,
+    month: int | None = None,
+    year_month: str | None = None,
+) -> pd.DataFrame:
+    """Filter deposit operations by selected year(s), calendar month (1..12), or YYYY-MM."""
+    if deposit_ops.empty:
+        return deposit_ops.copy()
+    view = deposit_ops
+    if years is not None:
+        year_set = {int(y) for y in years}
+        view = view[view["year"].isin(year_set)]
+    if year_month:
+        view = view[view["year_month"] == str(year_month)]
+    elif month is not None:
+        view = view[view["month"] == int(month)]
+    return view.reset_index(drop=True)
+
+
+def aggregate_deposits_monthly(
+    deposit_ops: pd.DataFrame,
+    *,
+    years: Iterable[int] | None = None,
+    by_calendar_month: bool = False,
+) -> pd.DataFrame:
+    """Aggregate deposited capital either chronologically (YYYY-MM) or across calendar months (Jan-Dec)."""
+    filtered = filter_deposit_operations(deposit_ops, years=years)
+    if by_calendar_month:
+        rows = []
+        for m in range(1, 13):
+            sub = filtered[filtered["month"] == m] if not filtered.empty else filtered
+            rows.append(
+                {
+                    "month": m,
+                    "month_label": MONTH_ABBR[m - 1],
+                    "total_amount": float(sub["amount"].sum()) if not sub.empty else 0.0,
+                    "deposit_count": int(len(sub)),
+                    "years_active": int(sub["year"].nunique()) if not sub.empty else 0,
+                }
+            )
+        return pd.DataFrame(rows)
+
+    if filtered.empty:
+        return pd.DataFrame(
+            columns=[
+                "year",
+                "month",
+                "month_label",
+                "year_month",
+                "label",
+                "total_amount",
+                "deposit_count",
+            ]
+        )
+
+    selected_years = sorted({int(y) for y in years}) if years is not None else None
+    grouped = (
+        filtered.groupby(["year", "month", "year_month"], as_index=False)
+        .agg(total_amount=("amount", "sum"), deposit_count=("amount", "count"))
+        .sort_values(["year", "month"])
+    )
+    by_ym = {
+        str(row["year_month"]): (float(row["total_amount"]), int(row["deposit_count"]))
+        for _, row in grouped.iterrows()
+    }
+
+    # Build a clean continuous monthly axis for selected years (or min..max period when contiguous).
+    if selected_years and len(selected_years) <= 2:
+        max_ym_in_data = str(deposit_ops["year_month"].max())
+        timeline_months: list[tuple[int, int]] = []
+        for yr in selected_years:
+            for m in range(1, 13):
+                ym = f"{yr:04d}-{m:02d}"
+                if ym <= max_ym_in_data or ym in by_ym:
+                    timeline_months.append((yr, m))
+    elif selected_years:
+        max_ym_in_data = str(deposit_ops["year_month"].max())
+        timeline_months = [
+            (yr, m)
+            for yr in selected_years
+            for m in range(1, 13)
+            if f"{yr:04d}-{m:02d}" <= max_ym_in_data or f"{yr:04d}-{m:02d}" in by_ym
+        ]
+    else:
+        start_ym = pd.Period(str(filtered["year_month"].min()), freq="M")
+        end_ym = pd.Period(str(filtered["year_month"].max()), freq="M")
+        periods = pd.period_range(start_ym, end_ym, freq="M")
+        timeline_months = [(int(p.year), int(p.month)) for p in periods]
+
+    out_rows = []
+    for yr, m in timeline_months:
+        ym = f"{yr:04d}-{m:02d}"
+        amt, cnt = by_ym.get(ym, (0.0, 0))
+        out_rows.append(
+            {
+                "year": yr,
+                "month": m,
+                "month_label": MONTH_ABBR[m - 1],
+                "year_month": ym,
+                "label": f"{MONTH_ABBR[m - 1]} {yr}",
+                "total_amount": amt,
+                "deposit_count": cnt,
+            }
+        )
+    return pd.DataFrame(out_rows)
+
+
+def top_deposit_months(
+    deposit_ops: pd.DataFrame,
+    *,
+    years: Iterable[int] | None = None,
+    limit: int = 10,
+) -> pd.DataFrame:
+    """Return the Top N highest-deposit months (YYYY-MM) within the selected year(s)."""
+    filtered = filter_deposit_operations(deposit_ops, years=years)
+    cols = [
+        "rank",
+        "year_month",
+        "label",
+        "year",
+        "month",
+        "deposit_count",
+        "total_amount",
+        "share_pct",
+    ]
+    if filtered.empty or limit <= 0:
+        return pd.DataFrame(columns=cols)
+
+    scope_total = float(filtered["amount"].sum())
+    grouped = (
+        filtered.groupby(["year_month", "year", "month"], as_index=False)
+        .agg(total_amount=("amount", "sum"), deposit_count=("amount", "count"))
+        .sort_values(
+            by=["total_amount", "deposit_count", "year_month"],
+            ascending=[False, False, False],
+        )
+        .head(limit)
+        .reset_index(drop=True)
+    )
+    grouped["rank"] = range(1, len(grouped) + 1)
+    grouped["label"] = grouped.apply(
+        lambda r: f"{MONTH_ABBR[int(r['month']) - 1]} {int(r['year'])}", axis=1
+    )
+    grouped["share_pct"] = grouped["total_amount"] / scope_total if scope_total > 0 else 0.0
+    return grouped[cols]

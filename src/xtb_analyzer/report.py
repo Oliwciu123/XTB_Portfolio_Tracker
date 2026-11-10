@@ -29,18 +29,27 @@ from xtb_analyzer.benchmark import (
 from xtb_analyzer.cash import income_by_currency
 from xtb_analyzer.charts import (
     BENCHMARK_META,
+    MONTH_LABELS,
     PLOTLY_SHOW_CONFIG,
     _format_decimal,
     build_return_comparison_figure,
     plot_company_pnl,
     plot_currency_allocation,
     plot_holdings_allocation,
+    plot_monthly_deposits,
     plot_monthly_returns_heatmap,
     plot_nav_with_deposits,
     plot_sector_allocation,
     prepare_return_comparison_data,
 )
-from xtb_analyzer.flows import analyze_conversion_losses, attach_deposits_to_nav, conversion_summary
+from xtb_analyzer.definitions import METRIC_DEFINITIONS, definitions_json_map
+from xtb_analyzer.flows import (
+    analyze_conversion_losses,
+    attach_deposits_to_nav,
+    conversion_summary,
+    extract_deposit_operations,
+    top_deposit_months,
+)
 from xtb_analyzer.fx import fetch_fx_rates
 from xtb_analyzer.market_data import MarketData
 from xtb_analyzer.metrics import company_pnl_summary, format_company_pnl_table
@@ -51,6 +60,7 @@ from xtb_analyzer.prices import fetch_benchmarks, xtb_to_yahoo
 from xtb_analyzer.returns import ReturnMeasures, compute_return_measures, twr_daily_returns
 from xtb_analyzer.risk import RiskStats, compute_risk_stats
 from xtb_analyzer.sectors import enrich_positions_with_sectors, sector_allocation
+from xtb_analyzer.tax import Pit38Report, compute_pit38_report, compute_trade_stats
 
 
 @lru_cache(maxsize=1)
@@ -74,6 +84,9 @@ class ReportData:
     income: pd.DataFrame
     currency: str
     company_pnl: pd.DataFrame = field(default_factory=pd.DataFrame)
+    deposit_ops: pd.DataFrame = field(default_factory=pd.DataFrame)
+    pit38: Pit38Report | None = None
+    trade_stats: dict[str, object] = field(default_factory=dict)
     custom_benchmarks: dict[str, dict[str, object]] = field(default_factory=dict)
     is_demo: bool = False
 
@@ -262,6 +275,18 @@ def collect_report_data(
     company_pnl = company_pnl_summary(
         accounts, positions, currency=currency, fx_row=fx.iloc[-1], use_cache=use_cache
     )
+    deposit_ops = extract_deposit_operations(
+        accounts, currency=currency, fx=fx, use_cache=use_cache
+    )
+    pit38 = compute_pit38_report(
+        accounts,
+        fx=fx,
+        splits=nav.attrs.get("splits"),
+        use_cache=use_cache,
+        allow_boundary_fallback=True,
+        last_date=nav.index[-1] if not nav.empty else None,
+    )
+    trade_stats = compute_trade_stats(pit38)
 
     custom_benchmarks: dict[str, dict[str, object]] = {}
 
@@ -282,6 +307,9 @@ def collect_report_data(
         income=income_by_currency(accounts),
         currency=currency,
         company_pnl=company_pnl,
+        deposit_ops=deposit_ops,
+        pit38=pit38,
+        trade_stats=trade_stats,
         custom_benchmarks=custom_benchmarks,
         is_demo=market_data.synthetic if market_data is not None else False,
     )
@@ -305,7 +333,7 @@ def _fmt_pct(value: float | None, decimals: int = 2, sign: bool = True) -> str:
     return pattern.format(value * 100)
 
 
-_FIXED_CHARTS = {"chart-monthly", "chart-pnl", "chart-holdings"}
+_FIXED_CHARTS = {"chart-monthly", "chart-pnl", "chart-holdings", "chart-deposits"}
 
 
 def _report_figure(fig: go.Figure, plot_id: str | None = None) -> go.Figure:
@@ -391,13 +419,34 @@ def _tone(value: float | None) -> str:
 
 
 def _stat_card(
-    label: str, value: str, sub: str = "", tone: str = "neutral", big: bool = False
+    label: str,
+    value: str,
+    sub: str = "",
+    tone: str = "neutral",
+    big: bool = False,
+    metric_key: str | None = None,
+    card_id: str = "",
+    extra_cls: str = "",
 ) -> str:
     size = " stat-big" if big else ""
+    cls_tail = f" {extra_cls}" if extra_cls else ""
+    id_attr = f" id='{html_lib.escape(card_id)}'" if card_id else ""
     sub_html = f"<div class='stat-sub'>{html_lib.escape(sub)}</div>" if sub else ""
+    if metric_key and metric_key in METRIC_DEFINITIONS:
+        esc_label = html_lib.escape(label)
+        esc_key = html_lib.escape(metric_key)
+        label_html = (
+            f"<div class='stat-label-row'>"
+            f"<span class='stat-label'>{esc_label}</span>"
+            f"<button type='button' class='metric-info-btn' data-metric-key='{esc_key}' "
+            f"aria-label='Explain {esc_label}' aria-haspopup='dialog' aria-expanded='false'>i</button>"
+            f"</div>"
+        )
+    else:
+        label_html = f"<div class='stat-label'>{html_lib.escape(label)}</div>"
     return (
-        f"<div class='stat{size} stat-{tone}'>"
-        f"<div class='stat-label'>{html_lib.escape(label)}</div>"
+        f"<div{id_attr} class='stat{size} stat-{tone}{cls_tail}'>"
+        f"{label_html}"
         f"<div class='stat-value'>{html_lib.escape(value)}</div>"
         f"{sub_html}"
         f"</div>"
@@ -418,12 +467,14 @@ def _kpi_section(data: ReportData) -> str:
             f"{_fmt_num(measures.final_value)} {currency}",
             "current account valuation",
             big=True,
+            metric_key="nav",
         ),
         _stat_card(
             "Gross contributions",
             f"{_fmt_num(measures.invested)} {currency}",
             f"withdrawals: {_fmt_num(measures.withdrawn)} {currency}",
             big=True,
+            metric_key="contributions",
         ),
         _stat_card(
             "Profit / loss",
@@ -431,6 +482,7 @@ def _kpi_section(data: ReportData) -> str:
             "NAV + withdrawals − contributions",
             _tone(measures.gain),
             big=True,
+            metric_key="profit_loss",
         ),
         _stat_card(
             "ROI",
@@ -438,6 +490,7 @@ def _kpi_section(data: ReportData) -> str:
             "profit divided by gross contributions",
             _tone(measures.roi),
             big=True,
+            metric_key="roi",
         ),
         _stat_card(
             "MWR (XIRR)",
@@ -445,6 +498,7 @@ def _kpi_section(data: ReportData) -> str:
             f"annualized: {_fmt_pct(measures.xirr)}",
             _tone(measures.mwr),
             big=True,
+            metric_key="mwr_xirr",
         ),
         _stat_card(
             "TWR",
@@ -452,12 +506,13 @@ def _kpi_section(data: ReportData) -> str:
             f"annualized: {_fmt_pct(measures.twr_annualized)}",
             _tone(measures.twr),
             big=True,
+            metric_key="twr",
         ),
     ]
     return "<div class='stat-grid kpi'>" + "".join(cards) + "</div>"
 
 
-def _risk_cards_html(risk: RiskStats) -> str:
+def _risk_cards_html(risk: RiskStats, trade_stats: dict[str, object] | None = None) -> str:
     drawdown_period = (
         f"{risk.max_drawdown_start} → {risk.max_drawdown_end}"
         if risk.max_drawdown_start and risk.max_drawdown_end
@@ -476,22 +531,87 @@ def _risk_cards_html(risk: RiskStats) -> str:
             "Annualized volatility",
             _fmt_pct(risk.volatility_annual, sign=False),
             "standard deviation of daily returns",
+            metric_key="volatility",
         ),
-        _stat_card("Sharpe ratio", _fmt_num(risk.sharpe), "return relative to volatility"),
-        _stat_card("Sortino ratio", _fmt_num(risk.sortino), "return relative to downside risk"),
         _stat_card(
-            "Annualized alpha", _fmt_pct(alpha_val), f"relative to {bench_name}", _tone(alpha_val)
+            "Sharpe ratio",
+            _fmt_num(risk.sharpe),
+            "return relative to volatility",
+            metric_key="sharpe",
         ),
-        _stat_card("Beta", _fmt_num(beta_val), f"sensitivity relative to {bench_name}"),
+        _stat_card(
+            "Sortino ratio",
+            _fmt_num(risk.sortino),
+            "return relative to downside risk",
+            metric_key="sortino",
+        ),
+        _stat_card(
+            "Annualized alpha",
+            _fmt_pct(alpha_val),
+            f"relative to {bench_name}",
+            _tone(alpha_val),
+            metric_key="alpha",
+        ),
+        _stat_card(
+            "Beta",
+            _fmt_num(beta_val),
+            f"sensitivity relative to {bench_name}",
+            metric_key="beta",
+        ),
         _stat_card(
             "Maximum drawdown",
             _fmt_pct(risk.max_drawdown),
             drawdown_period,
             _tone(risk.max_drawdown),
+            metric_key="max_drawdown",
         ),
-        _stat_card("Best month", _fmt_pct(risk.best_month), tone="pos"),
-        _stat_card("Worst month", _fmt_pct(risk.worst_month), tone="neg"),
+        _stat_card(
+            "Calmar ratio",
+            _fmt_num(risk.calmar),
+            "annualized TWR vs max drawdown",
+            metric_key="calmar",
+        ),
+        _stat_card(
+            "Daily VaR (95%)",
+            _fmt_pct(risk.var_95_daily),
+            "5th percentile daily TWR",
+            _tone(risk.var_95_daily),
+            metric_key="var_95",
+        ),
     ]
+    if trade_stats and int(trade_stats.get("closed_lots", 0) or 0) > 0:
+        win_rate = trade_stats.get("win_rate")
+        profit_factor = trade_stats.get("profit_factor")
+        closed_cnt = int(trade_stats.get("closed_lots", 0) or 0)
+        win_cnt = int(trade_stats.get("winning_lots", 0) or 0)
+        cards.append(
+            _stat_card(
+                "Win rate",
+                _fmt_pct(float(win_rate), sign=False) if win_rate is not None else "—",
+                f"{win_cnt}/{closed_cnt} closed FIFO lots",
+                "pos" if win_rate is not None and float(win_rate) >= 0.5 else "neutral",
+                metric_key="win_rate",
+            )
+        )
+        cards.append(
+            _stat_card(
+                "Profit factor",
+                _fmt_num(float(profit_factor)) if profit_factor is not None else "—",
+                "gross closed profit / loss",
+                "pos" if profit_factor is not None and float(profit_factor) >= 1.0 else "neg",
+                metric_key="profit_factor",
+            )
+        )
+    cards.extend(
+        [
+            _stat_card(
+                "Best month", _fmt_pct(risk.best_month), tone="pos", metric_key="best_month"
+            ),
+            _stat_card(
+                "Worst month", _fmt_pct(risk.worst_month), tone="neg", metric_key="worst_month"
+            ),
+        ]
+    )
     return "<div class='stat-grid'>" + "".join(cards) + "</div>"
 
 
@@ -507,6 +627,7 @@ def _conversion_summary_section(stats: dict[str, float], losses: pd.DataFrame) -
             f"assumed fee · conversions: {ops_count}",
             "neg" if total_loss > 0 else "neutral",
             big=True,
+            metric_key="fx_conversion_cost",
         ),
         _stat_card(
             "Total converted capital",
@@ -531,6 +652,7 @@ def _attribution_section(attribution: FxAttribution) -> str:
             f"{_fmt_pct(inv_share, 0, sign=False)} of total gain" if inv_share is not None else "",
             _tone(attribution.investment_gain_pln),
             big=True,
+            metric_key="investment_gain",
         ),
         _stat_card(
             "FX gain",
@@ -538,6 +660,7 @@ def _attribution_section(attribution: FxAttribution) -> str:
             f"{_fmt_pct(fx_share, 0, sign=False)} of total gain" if fx_share is not None else "",
             _tone(attribution.fx_gain_pln),
             big=True,
+            metric_key="fx_gain",
         ),
         _stat_card(
             "Total gain",
@@ -592,6 +715,499 @@ def _income_table(income: pd.DataFrame) -> str:
     return _table_html(frame)
 
 
+def _ensure_deposit_ops(data: ReportData) -> pd.DataFrame:
+    if data.deposit_ops is not None and (
+        not data.deposit_ops.empty or len(data.deposit_ops.columns) > 0
+    ):
+        return data.deposit_ops
+    return extract_deposit_operations(data.accounts, currency=data.currency)
+
+
+def _deposits_payload(data: ReportData) -> dict[str, object]:
+    ops = _ensure_deposit_ops(data)
+    curr = data.currency.upper()
+    if ops.empty:
+        return {
+            "currency": curr,
+            "years": [],
+            "lifetime_total": 0.0,
+            "operations": [],
+        }
+    years = sorted({int(y) for y in ops["year"].tolist()})
+    records = [
+        {
+            "tx_id": str(r["tx_id"]),
+            "date": str(r["date"]),
+            "timestamp": pd.Timestamp(r["timestamp"]).strftime("%Y-%m-%d %H:%M"),
+            "year": int(r["year"]),
+            "month": int(r["month"]),
+            "month_name": str(r["month_name"]),
+            "year_month": str(r["year_month"]),
+            "account_id": str(r["account_id"]),
+            "account_currency": str(r["currency"]),
+            "amount_foreign": round(float(r["amount_foreign"]), 2),
+            "amount": round(float(r["amount"]), 2),
+            "xtb_rate": round(float(r["xtb_rate"]), 6),
+            "comment": str(r["comment"] or ""),
+        }
+        for _, r in ops.iterrows()
+    ]
+    return {
+        "currency": curr,
+        "years": years,
+        "lifetime_total": round(float(ops["amount"].sum()), 2),
+        "operations": records,
+    }
+
+
+def _deposits_section_html(data: ReportData) -> str:
+    ops = _ensure_deposit_ops(data)
+    curr = data.currency.upper()
+    total_amt = float(ops["amount"].sum()) if not ops.empty else 0.0
+    ops_count = len(ops)
+    active_months = int(ops["year_month"].nunique()) if not ops.empty else 0
+    avg_month = total_amt / active_months if active_months > 0 else 0.0
+    top10 = top_deposit_months(ops, limit=10)
+    if not top10.empty:
+        peak_row = top10.iloc[0]
+        peak_val = f"{_fmt_num(float(peak_row['total_amount']))} {curr}"
+        peak_sub = f"{peak_row['label']} ({int(peak_row['deposit_count'])} ops)"
+    else:
+        peak_val = f"0.00 {curr}"
+        peak_sub = "no deposits recorded"
+
+    kpis = (
+        "<div class='stat-grid' id='deposits-kpis'>"
+        + _stat_card(
+            "Deposited in scope",
+            f"{_fmt_num(total_amt)} {curr}",
+            f"{ops_count} deposit operations",
+            tone="pos" if total_amt > 0 else "neutral",
+            big=True,
+            card_id="dep-stat-total",
+        )
+        + _stat_card(
+            "Average active month",
+            f"{_fmt_num(avg_month)} {curr}",
+            f"across {active_months} funded months",
+            big=True,
+            card_id="dep-stat-avg",
+        )
+        + _stat_card(
+            "Highest deposit month",
+            peak_val,
+            peak_sub,
+            tone="pos" if total_amt > 0 else "neutral",
+            big=True,
+            card_id="dep-stat-peak",
+        )
+        + _stat_card(
+            "Share of total history",
+            "100.00%" if total_amt > 0 else "0.00%",
+            f"lifetime: {_fmt_num(total_amt)} {curr}",
+            big=True,
+            card_id="dep-stat-share",
+        )
+        + "</div>"
+    )
+
+    years = sorted({int(y) for y in ops["year"].tolist()}) if not ops.empty else []
+    year_btns = "".join(
+        f"<button type='button' class='filter-btn' data-dep-year='{yr}'>{yr}</button>"
+        for yr in years
+    )
+    month_btns = "".join(
+        f"<button type='button' class='filter-btn' data-dep-month='{idx}'>{lbl}</button>"
+        for idx, lbl in enumerate(MONTH_LABELS, start=1)
+    )
+
+    top10_rows_html = ""
+    if top10.empty:
+        top10_html = "<p class='muted'>No deposit operations available.</p>"
+    else:
+        for _, r in top10.iterrows():
+            ym = html_lib.escape(str(r["year_month"]))
+            lbl = html_lib.escape(str(r["label"]))
+            cnt = int(r["deposit_count"])
+            amt = _fmt_num(float(r["total_amount"]))
+            shr = _fmt_pct(float(r["share_pct"]), sign=False)
+            rk = int(r["rank"])
+            top10_rows_html += (
+                f"<tr class='clickable-row' data-inspect-ym='{ym}' title='Click to inspect {lbl}'>"
+                f"<td><b>#{rk}</b></td>"
+                f"<td>{lbl} <span class='muted'>({ym})</span></td>"
+                f"<td>{cnt}</td>"
+                f"<td><b>{amt} {curr}</b></td>"
+                f"<td>{shr}</td>"
+                f"</tr>"
+            )
+        top10_html = (
+            "<div class='table-wrap'><table class='data' id='deposits-top10-table'>"
+            "<thead><tr><th>Rank</th><th>Month</th><th>Deposits</th>"
+            f"<th>Total ({curr})</th><th>Share</th></tr></thead>"
+            f"<tbody>{top10_rows_html}</tbody></table></div>"
+        )
+
+    if ops.empty:
+        ops_html = "<p class='muted'>No deposit operations match the current filter.</p>"
+    else:
+        ops_sorted = ops.sort_values("timestamp", ascending=False)
+        ops_rows = []
+        for _, r in ops_sorted.iterrows():
+            dt_str = html_lib.escape(pd.Timestamp(r["timestamp"]).strftime("%Y-%m-%d %H:%M"))
+            acc_id = html_lib.escape(str(r["account_id"]))
+            acc_curr = html_lib.escape(str(r["currency"]))
+            amt_for = _fmt_num(float(r["amount_foreign"]))
+            amt_rep = _fmt_num(float(r["amount"]))
+            rate_str = _fmt_num(float(r["xtb_rate"]), 4)
+            comm_txt = html_lib.escape(str(r["comment"] or "Direct deposit"))
+            ops_rows.append(
+                f"<tr>"
+                f"<td>{dt_str}</td>"
+                f"<td>{acc_id} ({acc_curr})</td>"
+                f"<td>{amt_for} {acc_curr}</td>"
+                f"<td>{rate_str}</td>"
+                f"<td><b>{amt_rep} {curr}</b></td>"
+                f"<td class='muted-cell'>{comm_txt}</td>"
+                f"</tr>"
+            )
+        ops_html = (
+            "<div class='table-wrap deposits-ops-scroll'><table class='data' id='deposits-ops-table'>"
+            "<thead><tr><th>Date &amp; time</th><th>Account</th><th>Account amount</th>"
+            f"<th>FX rate</th><th>Amount ({curr})</th><th>Operation details</th></tr></thead>"
+            f"<tbody>{''.join(ops_rows)}</tbody></table></div>"
+        )
+
+    return (
+        "<section id='deposits' class='tab-panel' role='tabpanel'>"
+        "<div class='panel-block' id='deposits-overview'>"
+        "<h2>Deposit analytics &amp; monthly cash contributions</h2>"
+        "<p class='section-desc'>Analyze inbound capital across all history, single years, or "
+        "multi-year combinations. Click any year(s), month pill, or histogram bar to inspect "
+        "exact monthly deposit operations.</p>"
+        f"{kpis}"
+        "<div class='interactive-toolbar deposits-toolbar'>"
+        "<div class='toolbar-row'>"
+        "<span class='toolbar-label'>Years (combine any):</span>"
+        "<div class='filter-group' id='dep-year-group'>"
+        "<button type='button' class='filter-btn active' data-dep-year='all'>All years (Total)</button>"
+        f"{year_btns}"
+        "</div>"
+        "<div class='filter-group dep-mode-group'>"
+        "<button type='button' class='filter-btn active' data-dep-grouping='timeline'>Monthly timeline (YYYY-MM)</button>"
+        "<button type='button' class='filter-btn' data-dep-grouping='calendar'>Calendar months (Jan–Dec sum)</button>"
+        "</div>"
+        "</div>"
+        "<div class='toolbar-row'>"
+        "<span class='toolbar-label'>Inspect month:</span>"
+        "<div class='filter-group' id='dep-month-group'>"
+        "<button type='button' class='filter-btn active' data-dep-month='all'>All months</button>"
+        f"{month_btns}"
+        "</div>"
+        "<button type='button' class='filter-btn dep-reset-btn' id='dep-reset-filters'>Reset filters</button>"
+        "</div>"
+        "<div class='dep-scope-banner' id='dep-scope-banner' role='status' aria-live='polite'>"
+        f"Scope: <b>All years</b> · <b>All months</b> — {ops_count} deposits totaling <b>{_fmt_num(total_amt)} {curr}</b>"
+        "</div>"
+        "</div>"
+        f"<div id='deposits-chart-box'>{_chart(plot_monthly_deposits(ops, data.currency), plot_id='chart-deposits')}</div>"
+        "</div>"
+        "<div class='deposits-grid'>"
+        "<div class='panel-block' id='deposits-top10-panel'>"
+        "<h2 id='dep-top10-heading'>Top 10 deposit months</h2>"
+        "<p class='section-desc' id='dep-top10-sub'>Highest-contribution months in the selected year scope. Click a row to inspect its operations.</p>"
+        f"<div id='deposits-top10-wrap'>{top10_html}</div>"
+        "</div>"
+        "<div class='panel-block' id='deposits-ops-panel'>"
+        "<h2 id='dep-ops-heading'>Deposit operations</h2>"
+        f"<p class='section-desc' id='dep-ops-sub'>Showing all {ops_count} inbound deposits ({_fmt_num(total_amt)} {curr}).</p>"
+        f"<div id='deposits-ops-wrap'>{ops_html}</div>"
+        "</div>"
+        "</div>"
+        "</section>"
+    )
+
+
+def _ensure_pit38(data: ReportData) -> Pit38Report:
+    if data.pit38 is not None:
+        return data.pit38
+    return compute_pit38_report(
+        data.accounts,
+        allow_boundary_fallback=True,
+        last_date=data.nav.index[-1] if not data.nav.empty else None,
+    )
+
+
+def _pit38_cards_for_summary(summary_dict: dict[str, object], scope_label: str) -> str:
+    rev = float(summary_dict.get("section_c_revenue_pln", 0.0) or 0.0)
+    costs = float(summary_dict.get("section_c_costs_pln", 0.0) or 0.0)
+    comms = float(summary_dict.get("section_c_commissions_pln", 0.0) or 0.0)
+    net = float(summary_dict.get("section_c_net_pln", 0.0) or 0.0)
+    lots_cnt = int(summary_dict.get("sold_lots_count", 0) or 0)
+    sec_c_tax = float(summary_dict.get("section_c_tax_pln", 0.0) or 0.0)
+    sec_c_tax_rnd = int(summary_dict.get("section_c_tax_rounded_pln", 0) or 0)
+    sec_c_base_rnd = int(summary_dict.get("section_c_tax_base_rounded_pln", 0) or 0)
+
+    div_cnt = int(summary_dict.get("dividends_count", 0) or 0)
+    div_gross = float(summary_dict.get("dividends_gross_pln", 0.0) or 0.0)
+    div_pl19 = float(summary_dict.get("dividends_polish_tax_19_pln", 0.0) or 0.0)
+    div_wht_paid = float(summary_dict.get("dividends_wht_paid_pln", 0.0) or 0.0)
+    div_wht_cred = float(summary_dict.get("dividends_wht_credit_pln", 0.0) or 0.0)
+    div_due = float(summary_dict.get("dividends_tax_due_pln", 0.0) or 0.0)
+    div_due_rnd = int(summary_dict.get("dividends_tax_due_rounded_pln", 0) or 0)
+
+    tot_tax = float(summary_dict.get("total_tax_due_pln", 0.0) or 0.0)
+    tot_tax_rnd = int(summary_dict.get("total_tax_due_rounded_pln", 0) or 0)
+
+    net_sign = "+" if net > 0 else ""
+    net_label = "Dochód (Taxable profit)" if net >= 0 else "Strata (Tax loss — 0 PLN tax)"
+
+    hero_row = (
+        "<div class='pit38-hero-grid'>"
+        + _stat_card(
+            f"Total PIT-38 tax payable ({scope_label})",
+            f"{_fmt_num(tot_tax)} PLN",
+            f"statutory full-PLN: {tot_tax_rnd:,} PLN · Section C + Dividend top-up",
+            "neg" if tot_tax > 0 else "pos",
+            big=True,
+            metric_key="pit38_total_tax",
+            extra_cls="pit38-total-card",
+        )
+        + "</div>"
+    )
+
+    sec_c_row = (
+        "<h3 class='pit38-subhead'>PIT-38 Section C — Capital gains on equity sales (FIFO, Art. 30b)</h3>"
+        "<div class='stat-grid pit38-grid'>"
+        + _stat_card(
+            "Section C revenue (Przychód)",
+            f"{_fmt_num(rev)} PLN",
+            f"{lots_cnt} matched FIFO lot slices · D−1 NBP",
+            "neutral",
+            big=True,
+            metric_key="pit38_revenue",
+        )
+        + _stat_card(
+            "Deductible costs (Koszty)",
+            f"{_fmt_num(costs)} PLN",
+            f"FIFO acquisition + commissions ({_fmt_num(comms)} PLN)",
+            "neutral",
+            big=True,
+            metric_key="pit38_costs",
+        )
+        + _stat_card(
+            "Profit / loss (Dochód / Strata)",
+            f"{net_sign}{_fmt_num(net)} PLN",
+            net_label,
+            _tone(net),
+            big=True,
+            metric_key="pit38_income",
+        )
+        + _stat_card(
+            "Section C 19% tax due",
+            f"{_fmt_num(sec_c_tax)} PLN",
+            f"tax base: {sec_c_base_rnd:,} PLN → {sec_c_tax_rnd:,} PLN rounded",
+            "neg" if sec_c_tax > 0 else "pos",
+            big=True,
+        )
+        + "</div>"
+    )
+
+    div_row = (
+        "<h3 class='pit38-subhead'>Dividends &amp; foreign withholding tax (Podatek u źródła, Art. 30a)</h3>"
+        "<div class='stat-grid pit38-grid'>"
+        + _stat_card(
+            "Gross dividends (Przychód)",
+            f"{_fmt_num(div_gross)} PLN",
+            f"{div_cnt} dividend payments at D−1 NBP",
+            "neutral",
+            big=True,
+        )
+        + _stat_card(
+            "Polish 19% flat tax",
+            f"{_fmt_num(div_pl19)} PLN",
+            "19% statutory dividend tax before credit",
+            "neutral",
+            big=True,
+        )
+        + _stat_card(
+            "Foreign WHT credit (Odliczenie)",
+            f"{_fmt_num(div_wht_cred)} PLN",
+            f"paid abroad: {_fmt_num(div_wht_paid)} PLN (capped at 19%)",
+            "pos" if div_wht_cred > 0 else "neutral",
+            big=True,
+            metric_key="pit38_wht_credit",
+        )
+        + _stat_card(
+            "Dividend tax to pay (Do dopłaty)",
+            f"{_fmt_num(div_due)} PLN",
+            f"statutory rounded: {div_due_rnd:,} PLN · net Polish surcharge",
+            "neg" if div_due > 0 else "pos",
+            big=True,
+        )
+        + "</div>"
+    )
+    return hero_row + sec_c_row + div_row
+
+
+def _pit38_section_html(data: ReportData) -> str:
+    pit = _ensure_pit38(data)
+    payload = pit.to_payload()
+    default_yr = pit.latest_year
+    if default_yr is not None and str(default_yr) in payload["by_year"]:
+        init_sum = payload["by_year"][str(default_yr)]
+        init_label = f"{default_yr} YTD estimate" if init_sum.get("is_ytd") else str(default_yr)
+    else:
+        init_sum = payload["all_years_summary"]
+        init_label = "All years"
+
+    year_btns = []
+    for yr in pit.available_years:
+        yr_info = pit.by_year[yr]
+        lbl = f"{yr} (YTD)" if yr_info.is_ytd else str(yr)
+        active_cls = " active" if yr == default_yr else ""
+        year_btns.append(
+            f"<button type='button' class='filter-btn{active_cls}' data-pit-year='{yr}'>{lbl}</button>"
+        )
+    all_active = " active" if default_yr is None else ""
+    year_btns.append(
+        f"<button type='button' class='filter-btn{all_active}' data-pit-year='all'>All years</button>"
+    )
+
+    init_matches = [m for m in pit.fifo_matches if (default_yr is None or m.tax_year == default_yr)]
+    if not init_matches:
+        fifo_html = "<p class='muted'>No closed/sold stock lots in the selected tax year.</p>"
+    else:
+        f_rows = []
+        for m in init_matches:
+            gl = m.gain_loss_pln
+            gl_str = f"{'+' if gl >= 0 else ''}{_fmt_num(gl)} PLN"
+            f_rows.append(
+                f"<tr>"
+                f"<td><b>{html_lib.escape(m.symbol)}</b></td>"
+                f"<td>{html_lib.escape(m.buy_date)}</td>"
+                f"<td>{html_lib.escape(m.sell_date)}</td>"
+                f"<td>{_fmt_num(m.shares, 4)}</td>"
+                f"<td>{_fmt_num(m.cost_orig)} {html_lib.escape(m.currency)}</td>"
+                f"<td>{_fmt_num(m.buy_nbp_rate, 4)} <span class='muted'>({html_lib.escape(m.buy_nbp_date)})</span></td>"
+                f"<td>{_fmt_num(m.acquisition_cost_pln)} PLN</td>"
+                f"<td>{_fmt_num(m.proceeds_orig)} {html_lib.escape(m.currency)}</td>"
+                f"<td>{_fmt_num(m.sell_nbp_rate, 4)} <span class='muted'>({html_lib.escape(m.sell_nbp_date)})</span></td>"
+                f"<td>{_fmt_num(m.revenue_pln)} PLN</td>"
+                f"<td>{_fmt_num(m.commission_pln)} PLN</td>"
+                f"<td>{gl_str}</td>"
+                f"</tr>"
+            )
+        fifo_html = (
+            "<div class='table-wrap'><table class='data' id='pit38-fifo-table'>"
+            "<thead><tr><th>Symbol</th><th>Buy date</th><th>Sell date</th><th>Shares</th>"
+            "<th>Buy cost (orig)</th><th>Buy NBP (D−1)</th><th>Acq. cost (PLN)</th>"
+            "<th>Proceeds (orig)</th><th>Sell NBP (D−1)</th><th>Revenue (PLN)</th>"
+            "<th>Comm. (PLN)</th><th>Gain / loss (PLN)</th></tr></thead>"
+            f"<tbody>{''.join(f_rows)}</tbody></table></div>"
+        )
+
+    init_divs = [d for d in pit.dividends if (default_yr is None or d.tax_year == default_yr)]
+    if not init_divs:
+        div_html = "<p class='muted'>No dividends recorded in the selected tax year.</p>"
+    else:
+        d_rows = []
+        for d in init_divs:
+            due_str = f"{_fmt_num(d.tax_due_pln)} PLN"
+            d_rows.append(
+                f"<tr>"
+                f"<td>{html_lib.escape(d.date)}</td>"
+                f"<td><b>{html_lib.escape(d.symbol)}</b></td>"
+                f"<td>{_fmt_num(d.gross_orig)} {html_lib.escape(d.currency)}</td>"
+                f"<td>{_fmt_num(d.wht_orig)} {html_lib.escape(d.currency)}</td>"
+                f"<td>{_fmt_num(d.wht_rate_pct, 1)}%</td>"
+                f"<td>{_fmt_num(d.nbp_rate, 4)} <span class='muted'>({html_lib.escape(d.nbp_date)})</span></td>"
+                f"<td>{_fmt_num(d.gross_pln)} PLN</td>"
+                f"<td>{_fmt_num(d.polish_tax_19_pln)} PLN</td>"
+                f"<td>{_fmt_num(d.wht_credit_pln)} PLN</td>"
+                f"<td><b>{due_str}</b></td>"
+                f"</tr>"
+            )
+        div_html = (
+            "<div class='table-wrap'><table class='data' id='pit38-div-table'>"
+            "<thead><tr><th>Date</th><th>Symbol</th><th>Gross (orig)</th><th>WHT paid (orig)</th>"
+            "<th>WHT %</th><th>NBP rate (D−1)</th><th>Gross (PLN)</th><th>19% PL tax</th>"
+            "<th>WHT credit</th><th>Tax due (Do dopłaty)</th></tr></thead>"
+            f"<tbody>{''.join(d_rows)}</tbody></table></div>"
+        )
+
+    cards_html = _pit38_cards_for_summary(init_sum, init_label)
+
+    return (
+        "<section id='pit38' class='tab-panel' role='tabpanel'>"
+        "<div class='panel-block' id='pit38-summary-panel'>"
+        "<h2>Polish PIT-38 tax settlement</h2>"
+        "<p class='section-desc'>Automated Polish capital-gains (FIFO) and dividend withholding-tax "
+        "calculation converted to PLN at official NBP Table A mid rates from the last business day "
+        "preceding each transaction (D−1).</p>"
+        "<div class='interactive-toolbar'>"
+        "<div class='filter-group' id='pit38-year-group'>"
+        "<span class='toolbar-label'>Tax year:</span>"
+        f"{''.join(year_btns)}"
+        "</div>"
+        "<div class='custom-bench-form'>"
+        "<input type='search' id='pit38-search-input' class='search-input' "
+        "placeholder='Filter by symbol or currency (e.g. NVDA, USD, EUR)...'>"
+        "<button type='button' id='export-pit38-csv' class='filter-btn'>Download PIT-38 CSV</button>"
+        "</div>"
+        "</div>"
+        f"<div id='pit38-cards-wrap'>{cards_html}</div>"
+        "</div>"
+        "<div class='panel-block' id='pit38-fifo-panel'>"
+        "<h2 id='pit38-fifo-heading'>FIFO lot-matching ledger (PIT-38 Section C)</h2>"
+        "<p class='section-desc'>Every sold share slice matched First-In, First-Out to its original "
+        "purchase lot, showing exact D−1 NBP Table A rates and deductible commissions.</p>"
+        f"<div id='pit38-fifo-wrap'>{fifo_html}</div>"
+        "</div>"
+        "<div class='panel-block' id='pit38-div-panel'>"
+        "<h2 id='pit38-div-heading'>Foreign dividends &amp; withholding tax credit (Podatek u źródła)</h2>"
+        "<p class='section-desc'>19% Polish dividend tax minus foreign withholding tax credited up "
+        "to the 19% statutory cap per payment, yielding net Polish tax to pay (do dopłaty).</p>"
+        f"<div id='pit38-dividends-wrap'>{div_html}</div>"
+        "<p class='pit38-disclaimer'>Tax estimate based on reconstructed XTB cash operations, strict "
+        "per-account FIFO lot matching (Art. 30b PIT), D−1 NBP Table A mid rates (Art. 11a PIT), "
+        "and per-payment 19% foreign WHT credit cap (Art. 30a ust. 9 PIT). Cross-check against "
+        "official PIT-8C statements and consult a licensed tax advisor before filing.</p>"
+        "</div>"
+        "</section>"
+    )
+
+
+def _metric_popover_html() -> str:
+    return (
+        "<div id='metric-backdrop' class='metric-backdrop' hidden></div>"
+        "<div id='metric-popover' class='metric-popover' role='dialog' aria-modal='false' "
+        "aria-labelledby='metric-popover-title' tabindex='-1' hidden>"
+        "<div class='metric-popover-header'>"
+        "<div>"
+        "<div class='metric-popover-eyebrow'>Indicator guide</div>"
+        "<h4 id='metric-popover-title' class='metric-popover-title'></h4>"
+        "</div>"
+        "<button type='button' id='metric-popover-close' class='metric-popover-close' "
+        "aria-label='Close metric definition'>×</button>"
+        "</div>"
+        "<div id='metric-popover-formula' class='metric-popover-formula'></div>"
+        "<div class='metric-popover-section'>"
+        "<div class='metric-popover-kicker'>What it measures</div>"
+        "<p id='metric-popover-explanation'></p>"
+        "</div>"
+        "<div class='metric-popover-section metric-popover-example-box'>"
+        "<div class='metric-popover-kicker'>Numerical example</div>"
+        "<p id='metric-popover-example'></p>"
+        "</div>"
+        "<div id='metric-popover-ranges-wrap' class='metric-popover-section'>"
+        "<div class='metric-popover-kicker'>Reference benchmarks</div>"
+        "<div id='metric-popover-ranges' class='metric-ranges-list'></div>"
+        "</div>"
+        "</div>"
+    )
+
+
 _DESIGN_CSS = """
 :root { --bg:#0b1221; --surface:#101e33; --card:#15253e; --border:#263c59; --accent:#818cf8; --accent-light:#a5b4fc; }
 body { background:radial-gradient(ellipse at 10% 0%,#182d49 0%,transparent 45%),var(--bg); }
@@ -599,9 +1215,11 @@ body { background:radial-gradient(ellipse at 10% 0%,#182d49 0%,transparent 45%),
 .panel-block { background:#101e33; border:1px solid #263c59; border-radius:22px; padding:26px; margin-top:24px; }
 .panel-block h2 { color:#c7d2fe; }
 .nav-cloud:nth-child(1) { border-top:3px solid #34d399; }
-.nav-cloud:nth-child(2) { border-top:3px solid #a78bfa; }
-.nav-cloud:nth-child(3) { border-top:3px solid #38bdf8; }
-.nav-cloud:nth-child(4) { border-top:3px solid #fbbf24; }
+.nav-cloud:nth-child(2) { border-top:3px solid #38bdf8; }
+.nav-cloud:nth-child(3) { border-top:3px solid #a78bfa; }
+.nav-cloud:nth-child(4) { border-top:3px solid #f472b6; }
+.nav-cloud:nth-child(5) { border-top:3px solid #fbbf24; }
+.nav-cloud:nth-child(6) { border-top:3px solid #fb7185; }
 .nav-cloud.active { background:#233456; border-color:#818cf8; }
 .stat { border-radius:16px; border:1px solid #2b405d; }
 .kpi .stat:nth-child(1) { background:#163b39; }
@@ -849,14 +1467,14 @@ header.hero {
 }
 .nav-clouds {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 14px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 12px;
 }
-@media (max-width: 1024px) {
+@media (max-width: 1180px) {
+  .nav-clouds { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+@media (max-width: 680px) {
   .nav-clouds { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 600px) {
-  .nav-clouds { grid-template-columns: 1fr; }
 }
 .nav-cloud {
   appearance: none;
@@ -1244,6 +1862,265 @@ footer {
 }
 .stat.live-updated { animation: statFlash 1.1s ease-out; }
 td.live-updated { animation: cellFlash 1.1s ease-out; }
+
+/* Interactive Metric Info Buttons & Accessible Popover */
+.stat-label-row {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  max-width: 100%;
+}
+.metric-info-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid rgba(148, 163, 184, 0.42);
+  background: rgba(15, 23, 42, 0.55);
+  color: #cbd5e1;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  padding: 0;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+.metric-info-btn:hover,
+.metric-info-btn:focus-visible,
+.metric-info-btn[aria-expanded="true"] {
+  background: var(--accent);
+  border-color: var(--accent-light);
+  color: #ffffff;
+  transform: scale(1.08);
+}
+.metric-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(5, 10, 20, 0.62);
+  backdrop-filter: blur(2px);
+  z-index: 1190;
+}
+.metric-popover {
+  position: fixed;
+  z-index: 1200;
+  width: min(440px, calc(100vw - 28px));
+  background: #13223a;
+  border: 1px solid #3b5984;
+  border-radius: 16px;
+  padding: 18px 20px;
+  box-shadow: 0 22px 48px rgba(2, 6, 23, 0.72), 0 0 0 1px rgba(129, 140, 248, 0.18);
+  text-align: left;
+  color: var(--text);
+}
+.metric-popover.is-pinned {
+  border-color: #818cf8;
+}
+.metric-popover-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.metric-popover-eyebrow {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #93c5fd;
+  margin-bottom: 2px;
+}
+.metric-popover-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: #f8fafc;
+  line-height: 1.3;
+}
+.metric-popover-close {
+  appearance: none;
+  background: rgba(30, 41, 59, 0.85);
+  border: 1px solid #334155;
+  color: #cbd5e1;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  font-size: 17px;
+  line-height: 1;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.metric-popover-close:hover {
+  background: #334155;
+  color: #ffffff;
+}
+.metric-popover-formula {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11.5px;
+  color: #c7d2fe;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(99, 102, 241, 0.28);
+  border-radius: 8px;
+  padding: 7px 10px;
+  margin-bottom: 12px;
+  overflow-wrap: anywhere;
+}
+.metric-popover-section {
+  margin-top: 10px;
+}
+.metric-popover-section p {
+  margin: 4px 0 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: #dbeafe;
+}
+.metric-popover-kicker {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #94a3b8;
+}
+.metric-popover-example-box {
+  background: rgba(15, 23, 42, 0.52);
+  border-left: 3px solid #38bdf8;
+  border-radius: 6px 10px 10px 6px;
+  padding: 8px 12px;
+}
+.metric-popover-example-box p {
+  color: #e2e8f0;
+  font-size: 12.5px;
+}
+.metric-ranges-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+.metric-range-item {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 12px;
+  padding: 5px 8px;
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.45);
+}
+.metric-range-band {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  font-size: 11.5px;
+  min-width: 108px;
+  flex-shrink: 0;
+}
+.metric-range-pos .metric-range-band { color: #34d399; }
+.metric-range-neutral .metric-range-band { color: #fbbf24; }
+.metric-range-neg .metric-range-band { color: #f87171; }
+.metric-range-meaning { color: #cbd5e1; line-height: 1.4; }
+@media (max-width: 680px) {
+  .metric-popover {
+    left: 12px !important;
+    right: 12px !important;
+    top: auto !important;
+    bottom: 12px !important;
+    width: auto !important;
+    max-width: calc(100vw - 24px) !important;
+    max-height: 82vh;
+    overflow-y: auto;
+  }
+}
+
+/* Deposit Analytics & PIT-38 Layouts */
+.deposits-toolbar {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.toolbar-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 8px 12px;
+}
+.toolbar-label {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.dep-scope-banner {
+  text-align: center;
+  font-size: 12.5px;
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  border-radius: 8px;
+  padding: 6px 12px;
+}
+.deposits-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(0, 1.08fr);
+  gap: 18px;
+  align-items: start;
+}
+@media (max-width: 1040px) {
+  .deposits-grid { grid-template-columns: 1fr; }
+}
+.deposits-ops-scroll {
+  max-height: 480px;
+  overflow-y: auto;
+}
+tr.clickable-row {
+  cursor: pointer;
+}
+tr.clickable-row.is-selected {
+  background: rgba(56, 189, 248, 0.16) !important;
+}
+td.muted-cell {
+  color: var(--muted);
+  font-size: 12px;
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pit38-hero-grid {
+  display: flex;
+  justify-content: center;
+  margin: 14px auto 8px;
+}
+.pit38-total-card {
+  min-width: min(440px, 100%);
+  max-width: 560px;
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.18) 0%, rgba(21, 37, 62, 0.96) 100%);
+  border-color: #6366f1 !important;
+}
+.pit38-subhead {
+  margin: 18px 0 8px;
+  font-size: 14.5px;
+  color: #cbd5e1;
+}
+.stat-grid.pit38-grid .stat {
+  flex: 1 1 230px;
+  max-width: 340px;
+}
+.pit38-disclaimer {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+  text-align: center;
+  margin: 10px auto 0;
+  max-width: 960px;
+}
 """
 
 
@@ -1279,7 +2156,7 @@ def build_live_payload(
             data.conversion_stats, data.conversion_losses
         ),
         "income_html": _income_table(data.income),
-        "risk_html": _risk_cards_html(data.risk),
+        "risk_html": _risk_cards_html(data.risk, data.trade_stats),
         "company_pnl_html": _table_html(format_company_pnl_table(data.company_pnl, data.currency)),
     }
 
@@ -1287,6 +2164,7 @@ def build_live_payload(
 def report_figures(data: ReportData) -> dict[str, go.Figure]:
     return {
         "chart-nav": plot_nav_with_deposits(data.nav, data.currency),
+        "chart-deposits": plot_monthly_deposits(_ensure_deposit_ops(data), data.currency),
         "chart-monthly": plot_monthly_returns_heatmap(data.twr_returns, data.currency),
         "chart-benchmark": build_return_comparison_figure(data.nav, data.benchmarks, data.currency),
         "chart-pnl": plot_company_pnl(data.company_pnl, data.currency),
@@ -1302,6 +2180,9 @@ _LIVE_SCRIPT = """
   const CURRENCY = __CURRENCY_JSON__;
   const IS_DEMO = __DEMO_JSON__;
   const PRELOADED_BENCHMARKS = __CUSTOM_BENCHMARKS_JSON__;
+  const METRIC_DEFINITIONS = __METRIC_DEFINITIONS_JSON__;
+  const DEPOSITS_DATA = __DEPOSITS_JSON__;
+  const PIT38_DATA = __PIT38_JSON__;
   const POLL_INTERVAL_MS = 10000;
   const EXTRA_COLORS = ['#f472b6', '#a3e635', '#fb923c', '#818cf8', '#2dd4bf', '#e879f9', '#38bdf8', '#facc15'];
   let extraColorIdx = 0;
@@ -1693,7 +2574,7 @@ _LIVE_SCRIPT = """
       });
     });
 
-    // 4-Section Cloud Navigation
+    // 6-Section Cloud Navigation
     document.querySelectorAll('.nav-cloud').forEach(function(cloud) {
       cloud.addEventListener('click', function() {
         const target = cloud.getAttribute('data-target');
@@ -1707,8 +2588,877 @@ _LIVE_SCRIPT = """
     }
 
     const hash = (window.location.hash || '').replace('#', '');
-    if (['overview', 'holdings', 'benchmarks', 'costs'].includes(hash)) {
+    if (['overview', 'deposits', 'benchmarks', 'holdings', 'costs', 'pit38'].includes(hash)) {
       activateSection(hash);
+    }
+
+    function escHtml(val) {
+      return String(val == null ? '' : val)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function fmtNum(val, decimals) {
+      const dec = decimals == null ? 2 : decimals;
+      if (val == null || Number.isNaN(Number(val))) return '—';
+      return Number(val).toLocaleString('en-US', {
+        minimumFractionDigits: dec,
+        maximumFractionDigits: dec
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Interactive Metric Definitions Popover (hover, click-pin, keyboard, mobile)
+    // -----------------------------------------------------------------------
+    const popover = document.getElementById('metric-popover');
+    const backdrop = document.getElementById('metric-backdrop');
+    const popClose = document.getElementById('metric-popover-close');
+    let activeMetricBtn = null;
+    let pinnedMetricBtn = null;
+    let hoverHideTimer = null;
+
+    function positionPopover(anchorBtn) {
+      if (!popover || !anchorBtn) return;
+      const isMobile = window.innerWidth <= 680;
+      if (backdrop) {
+        backdrop.hidden = !(isMobile && pinnedMetricBtn);
+      }
+      if (isMobile) {
+        popover.style.left = '';
+        popover.style.top = '';
+        popover.style.width = '';
+        return;
+      }
+      const rect = anchorBtn.getBoundingClientRect();
+      const popWidth = Math.min(440, window.innerWidth - 28);
+      popover.style.width = popWidth + 'px';
+      const popHeight = popover.offsetHeight || 280;
+      let left = rect.left + rect.width / 2 - popWidth / 2;
+      left = Math.max(14, Math.min(left, window.innerWidth - popWidth - 14));
+      let top = rect.bottom + 10;
+      if (top + popHeight > window.innerHeight - 14 && rect.top - popHeight - 10 >= 14) {
+        top = rect.top - popHeight - 10;
+      } else {
+        top = Math.max(14, Math.min(top, window.innerHeight - popHeight - 14));
+      }
+      popover.style.left = Math.round(left) + 'px';
+      popover.style.top = Math.round(top) + 'px';
+    }
+
+    function openMetricPopover(btn, pin) {
+      if (!popover || !btn) return;
+      const key = btn.getAttribute('data-metric-key') || '';
+      const def = METRIC_DEFINITIONS[key];
+      if (!def) return;
+      if (hoverHideTimer) {
+        clearTimeout(hoverHideTimer);
+        hoverHideTimer = null;
+      }
+      if (activeMetricBtn && activeMetricBtn !== btn) {
+        activeMetricBtn.setAttribute('aria-expanded', 'false');
+      }
+      activeMetricBtn = btn;
+      if (pin) {
+        pinnedMetricBtn = btn;
+        popover.classList.add('is-pinned');
+      } else if (!pinnedMetricBtn) {
+        popover.classList.remove('is-pinned');
+      }
+      btn.setAttribute('aria-expanded', 'true');
+
+      document.getElementById('metric-popover-title').textContent = def.title || '';
+      document.getElementById('metric-popover-formula').textContent = def.formula || '';
+      document.getElementById('metric-popover-explanation').textContent = def.explanation || '';
+      document.getElementById('metric-popover-example').textContent = def.example || '';
+
+      const rangesWrap = document.getElementById('metric-popover-ranges-wrap');
+      const rangesList = document.getElementById('metric-popover-ranges');
+      const ranges = Array.isArray(def.ranges) ? def.ranges : [];
+      if (rangesWrap && rangesList) {
+        if (ranges.length === 0) {
+          rangesWrap.style.display = 'none';
+          rangesList.innerHTML = '';
+        } else {
+          rangesWrap.style.display = '';
+          rangesList.innerHTML = ranges.map(function(r) {
+            const tone = r.tone === 'pos' || r.tone === 'neg' ? r.tone : 'neutral';
+            return (
+              '<div class="metric-range-item metric-range-' + tone + '">' +
+              '<span class="metric-range-band">' + escHtml(r.band) + '</span>' +
+              '<span class="metric-range-meaning">' + escHtml(r.meaning) + '</span>' +
+              '</div>'
+            );
+          }).join('');
+        }
+      }
+
+      popover.hidden = false;
+      positionPopover(btn);
+    }
+
+    function closeMetricPopover(restoreFocus) {
+      if (!popover) return;
+      const prevBtn = pinnedMetricBtn || activeMetricBtn;
+      if (activeMetricBtn) activeMetricBtn.setAttribute('aria-expanded', 'false');
+      if (pinnedMetricBtn) pinnedMetricBtn.setAttribute('aria-expanded', 'false');
+      activeMetricBtn = null;
+      pinnedMetricBtn = null;
+      popover.hidden = true;
+      popover.classList.remove('is-pinned');
+      if (backdrop) backdrop.hidden = true;
+      if (restoreFocus && prevBtn && typeof prevBtn.focus === 'function') {
+        prevBtn.focus();
+      }
+    }
+
+    function scheduleHoverClose() {
+      if (pinnedMetricBtn) return;
+      if (hoverHideTimer) clearTimeout(hoverHideTimer);
+      hoverHideTimer = setTimeout(function() {
+        if (!pinnedMetricBtn) closeMetricPopover(false);
+      }, 170);
+    }
+
+    document.addEventListener('mouseover', function(e) {
+      const btn = e.target.closest('.metric-info-btn');
+      if (btn) {
+        if (!pinnedMetricBtn) openMetricPopover(btn, false);
+        return;
+      }
+      if (popover && !popover.hidden && e.target.closest('#metric-popover')) {
+        if (hoverHideTimer) {
+          clearTimeout(hoverHideTimer);
+          hoverHideTimer = null;
+        }
+      }
+    });
+
+    document.addEventListener('mouseout', function(e) {
+      const btn = e.target.closest('.metric-info-btn');
+      const inPop = e.target.closest('#metric-popover');
+      if (btn || inPop) {
+        scheduleHoverClose();
+      }
+    });
+
+    document.addEventListener('focusin', function(e) {
+      const btn = e.target.closest('.metric-info-btn');
+      if (btn && !pinnedMetricBtn) {
+        openMetricPopover(btn, false);
+      }
+    });
+
+    document.addEventListener('click', function(e) {
+      const btn = e.target.closest('.metric-info-btn');
+      if (btn) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (pinnedMetricBtn === btn) {
+          closeMetricPopover(false);
+        } else {
+          openMetricPopover(btn, true);
+        }
+        return;
+      }
+      if (e.target.closest('#metric-popover-close') || e.target.closest('#metric-backdrop')) {
+        e.preventDefault();
+        closeMetricPopover(true);
+        return;
+      }
+      if (popover && !popover.hidden && !e.target.closest('#metric-popover')) {
+        closeMetricPopover(false);
+      }
+    });
+
+    document.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape' && popover && !popover.hidden) {
+        e.preventDefault();
+        closeMetricPopover(true);
+      }
+    });
+
+    window.addEventListener('resize', function() {
+      if (popover && !popover.hidden && activeMetricBtn) {
+        positionPopover(activeMetricBtn);
+      }
+    });
+    window.addEventListener('scroll', function() {
+      if (popover && !popover.hidden && activeMetricBtn && window.innerWidth > 680) {
+        positionPopover(activeMetricBtn);
+      }
+    }, { passive: true });
+    if (popClose) {
+      popClose.addEventListener('click', function(e) {
+        e.preventDefault();
+        closeMetricPopover(true);
+      });
+    }
+
+    // -----------------------------------------------------------------------
+    // Deposit Analytics Interactive Controller
+    // -----------------------------------------------------------------------
+    const MONTH_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const depSelectedYears = new Set(); // empty => All years
+    let depGrouping = 'timeline'; // 'timeline' | 'calendar'
+    let depSelectedMonth = null; // 1..12 or null
+    let depPinnedYearMonth = null; // 'YYYY-MM' or null
+
+    function bindDepositsPlotClick() {
+      const gd = document.getElementById('chart-deposits');
+      if (!gd || typeof gd.on !== 'function' || gd.dataset.depClickBound === '1') return;
+      gd.dataset.depClickBound = '1';
+      gd.on('plotly_click', function(ev) {
+        if (!ev || !ev.points || !ev.points.length) return;
+        const pt = ev.points[0];
+        if (depGrouping === 'calendar') {
+          const mNum = (pt.customdata && Number(pt.customdata[0])) || (pt.pointIndex + 1);
+          depPinnedYearMonth = null;
+          depSelectedMonth = (depSelectedMonth === mNum) ? null : mNum;
+        } else {
+          const ym = String(pt.x || (pt.customdata && pt.customdata[0]) || '');
+          if (!ym) return;
+          depSelectedMonth = null;
+          depPinnedYearMonth = (depPinnedYearMonth === ym) ? null : ym;
+        }
+        renderDepositsState();
+      });
+    }
+
+    function renderDepositsState() {
+      if (!DEPOSITS_DATA || !Array.isArray(DEPOSITS_DATA.operations)) return;
+      const allOps = DEPOSITS_DATA.operations;
+      const curr = DEPOSITS_DATA.currency || CURRENCY.toUpperCase();
+      const lifetimeTotal = Number(DEPOSITS_DATA.lifetime_total || 0);
+
+      // Sync toolbar button states
+      document.querySelectorAll('[data-dep-year]').forEach(function(btn) {
+        const val = btn.getAttribute('data-dep-year');
+        if (val === 'all') {
+          btn.classList.toggle('active', depSelectedYears.size === 0);
+        } else {
+          btn.classList.toggle('active', depSelectedYears.has(Number(val)));
+        }
+      });
+      document.querySelectorAll('[data-dep-grouping]').forEach(function(btn) {
+        btn.classList.toggle('active', btn.getAttribute('data-dep-grouping') === depGrouping);
+      });
+      document.querySelectorAll('[data-dep-month]').forEach(function(btn) {
+        const val = btn.getAttribute('data-dep-month');
+        if (val === 'all') {
+          btn.classList.toggle('active', depSelectedMonth === null && !depPinnedYearMonth);
+        } else {
+          const mNum = Number(val);
+          const pinnedMatches = depPinnedYearMonth && Number(depPinnedYearMonth.split('-')[1]) === mNum;
+          btn.classList.toggle('active', depSelectedMonth === mNum || Boolean(pinnedMatches));
+        }
+      });
+
+      // Filter by selected year(s)
+      const yearOps = depSelectedYears.size === 0
+        ? allOps
+        : allOps.filter(function(op) { return depSelectedYears.has(op.year); });
+
+      // Build Top 10 Months within selected year(s)
+      const byYm = new Map();
+      yearOps.forEach(function(op) {
+        const cur = byYm.get(op.year_month) || {
+          year_month: op.year_month,
+          year: op.year,
+          month: op.month,
+          label: MONTH_SHORT[op.month - 1] + ' ' + op.year,
+          total_amount: 0,
+          deposit_count: 0
+        };
+        cur.total_amount += op.amount;
+        cur.deposit_count += 1;
+        byYm.set(op.year_month, cur);
+      });
+      const yearScopeTotal = yearOps.reduce(function(acc, r) { return acc + r.amount; }, 0);
+      const top10 = Array.from(byYm.values()).sort(function(a, b) {
+        if (b.total_amount !== a.total_amount) return b.total_amount - a.total_amount;
+        if (b.deposit_count !== a.deposit_count) return b.deposit_count - a.deposit_count;
+        return b.year_month.localeCompare(a.year_month);
+      }).slice(0, 10);
+
+      const yearsLabel = depSelectedYears.size === 0
+        ? 'All years'
+        : Array.from(depSelectedYears).sort().join(' + ');
+
+      const top10Heading = document.getElementById('dep-top10-heading');
+      if (top10Heading) top10Heading.textContent = 'Top 10 deposit months · ' + yearsLabel;
+
+      const top10Wrap = document.getElementById('deposits-top10-wrap');
+      if (top10Wrap) {
+        if (top10.length === 0) {
+          top10Wrap.innerHTML = '<p class="muted">No deposits in the selected year scope.</p>';
+        } else {
+          const rowsHtml = top10.map(function(r, idx) {
+            const share = yearScopeTotal > 0 ? (r.total_amount / yearScopeTotal * 100).toFixed(2) + '%' : '0.00%';
+            const selCls = depPinnedYearMonth === r.year_month ? ' is-selected' : '';
+            return (
+              '<tr class="clickable-row' + selCls + '" data-inspect-ym="' + escHtml(r.year_month) + '">' +
+              '<td><b>#' + (idx + 1) + '</b></td>' +
+              '<td>' + escHtml(r.label) + ' <span class="muted">(' + escHtml(r.year_month) + ')</span></td>' +
+              '<td>' + r.deposit_count + '</td>' +
+              '<td><b>' + fmtNum(r.total_amount, 2) + ' ' + escHtml(curr) + '</b></td>' +
+              '<td>' + share + '</td>' +
+              '</tr>'
+            );
+          }).join('');
+          top10Wrap.innerHTML = (
+            '<div class="table-wrap"><table class="data" id="deposits-top10-table">' +
+            '<thead><tr><th>Rank</th><th>Month</th><th>Deposits</th><th>Total (' + escHtml(curr) + ')</th><th>Share</th></tr></thead>' +
+            '<tbody>' + rowsHtml + '</tbody></table></div>'
+          );
+          enableTableSorting(top10Wrap);
+        }
+      }
+
+      // Filter operations down to inspected month (if active)
+      let inspectedOps = yearOps;
+      let monthScopeLabel = 'All months';
+      if (depPinnedYearMonth) {
+        inspectedOps = yearOps.filter(function(op) { return op.year_month === depPinnedYearMonth; });
+        const parts = depPinnedYearMonth.split('-');
+        monthScopeLabel = MONTH_SHORT[Number(parts[1]) - 1] + ' ' + parts[0] + ' (' + depPinnedYearMonth + ')';
+      } else if (depSelectedMonth !== null) {
+        inspectedOps = yearOps.filter(function(op) { return op.month === depSelectedMonth; });
+        monthScopeLabel = MONTH_SHORT[depSelectedMonth - 1] + ' (all selected years)';
+      }
+
+      const inspectedTotal = inspectedOps.reduce(function(s, r) { return s + r.amount; }, 0);
+      const inspectedMonths = new Set(inspectedOps.map(function(r) { return r.year_month; })).size;
+      const inspectedAvg = inspectedMonths > 0 ? inspectedTotal / inspectedMonths : 0;
+
+      // Update KPI cards
+      const totalCard = document.getElementById('dep-stat-total');
+      if (totalCard) {
+        totalCard.querySelector('.stat-value').textContent = fmtNum(inspectedTotal, 2) + ' ' + curr;
+        totalCard.querySelector('.stat-sub').textContent = inspectedOps.length + ' deposit operation' + (inspectedOps.length === 1 ? '' : 's');
+      }
+      const avgCard = document.getElementById('dep-stat-avg');
+      if (avgCard) {
+        avgCard.querySelector('.stat-value').textContent = fmtNum(inspectedAvg, 2) + ' ' + curr;
+        avgCard.querySelector('.stat-sub').textContent = 'across ' + inspectedMonths + ' funded month' + (inspectedMonths === 1 ? '' : 's');
+      }
+      const peakCard = document.getElementById('dep-stat-peak');
+      if (peakCard) {
+        if (top10.length > 0) {
+          peakCard.querySelector('.stat-value').textContent = fmtNum(top10[0].total_amount, 2) + ' ' + curr;
+          peakCard.querySelector('.stat-sub').textContent = top10[0].label + ' (' + top10[0].deposit_count + ' ops)';
+        } else {
+          peakCard.querySelector('.stat-value').textContent = '0.00 ' + curr;
+          peakCard.querySelector('.stat-sub').textContent = 'no deposits in scope';
+        }
+      }
+      const shareCard = document.getElementById('dep-stat-share');
+      if (shareCard) {
+        const pct = lifetimeTotal > 0 ? (inspectedTotal / lifetimeTotal * 100) : 0;
+        shareCard.querySelector('.stat-value').textContent = pct.toFixed(2) + '%';
+        shareCard.querySelector('.stat-sub').textContent = 'of ' + fmtNum(lifetimeTotal, 2) + ' ' + curr + ' lifetime';
+      }
+
+      const banner = document.getElementById('dep-scope-banner');
+      if (banner) {
+        banner.innerHTML = (
+          'Scope: <b>' + escHtml(yearsLabel) + '</b> · <b>' + escHtml(monthScopeLabel) + '</b> — ' +
+          inspectedOps.length + ' deposit' + (inspectedOps.length === 1 ? '' : 's') +
+          ' totaling <b>' + fmtNum(inspectedTotal, 2) + ' ' + escHtml(curr) + '</b>'
+        );
+      }
+
+      // Render Deposit Operations inspection table
+      const opsSub = document.getElementById('dep-ops-sub');
+      if (opsSub) {
+        opsSub.textContent = (
+          'Showing ' + inspectedOps.length + ' inbound deposit' + (inspectedOps.length === 1 ? '' : 's') +
+          ' (' + fmtNum(inspectedTotal, 2) + ' ' + curr + ') for ' + yearsLabel + ' · ' + monthScopeLabel + '.'
+        );
+      }
+      const opsWrap = document.getElementById('deposits-ops-wrap');
+      if (opsWrap) {
+        if (inspectedOps.length === 0) {
+          opsWrap.innerHTML = '<p class="muted">No deposit operations match ' + escHtml(yearsLabel + ' · ' + monthScopeLabel) + '.</p>';
+        } else {
+          const sortedOps = inspectedOps.slice().sort(function(a, b) {
+            return b.timestamp.localeCompare(a.timestamp);
+          });
+          const opsRows = sortedOps.map(function(r) {
+            return (
+              '<tr>' +
+              '<td>' + escHtml(r.timestamp) + '</td>' +
+              '<td>' + escHtml(r.account_id) + ' (' + escHtml(r.account_currency) + ')</td>' +
+              '<td>' + fmtNum(r.amount_foreign, 2) + ' ' + escHtml(r.account_currency) + '</td>' +
+              '<td>' + fmtNum(r.xtb_rate, 4) + '</td>' +
+              '<td><b>' + fmtNum(r.amount, 2) + ' ' + escHtml(curr) + '</b></td>' +
+              '<td class="muted-cell">' + escHtml(r.comment || 'Direct deposit') + '</td>' +
+              '</tr>'
+            );
+          }).join('');
+          opsWrap.innerHTML = (
+            '<div class="table-wrap deposits-ops-scroll"><table class="data" id="deposits-ops-table">' +
+            '<thead><tr><th>Date &amp; time</th><th>Account</th><th>Account amount</th>' +
+            '<th>FX rate</th><th>Amount (' + escHtml(curr) + ')</th><th>Operation details</th></tr></thead>' +
+            '<tbody>' + opsRows + '</tbody></table></div>'
+          );
+          enableTableSorting(opsWrap);
+        }
+      }
+
+      // Update Plotly histogram (#chart-deposits)
+      const gd = document.getElementById('chart-deposits');
+      if (gd && window.Plotly) {
+        let xVals = [];
+        let yVals = [];
+        let customData = [];
+        let colors = [];
+        let hoverTemplate = '';
+
+        if (depGrouping === 'calendar') {
+          for (let m = 1; m <= 12; m++) {
+            const mOps = yearOps.filter(function(o) { return o.month === m; });
+            const sumM = mOps.reduce(function(s, o) { return s + o.amount; }, 0);
+            xVals.push(MONTH_SHORT[m - 1]);
+            yVals.push(Number(sumM.toFixed(2)));
+            customData.push([m, MONTH_SHORT[m - 1], mOps.length, 'calendar']);
+            const isHi = depSelectedMonth === m || (depPinnedYearMonth && Number(depPinnedYearMonth.split('-')[1]) === m);
+            colors.push(isHi ? '#34d399' : '#38bdf8');
+          }
+          hoverTemplate = '<b>%{x}</b><br>Deposited: <b>%{y:,.2f} ' + curr + '</b><br>Operations: <b>%{customdata[2]}</b><extra></extra>';
+        } else {
+          const maxYm = allOps.length ? allOps[allOps.length - 1].year_month : '';
+          const yrsToPlot = depSelectedYears.size > 0
+            ? Array.from(depSelectedYears).sort()
+            : (DEPOSITS_DATA.years || []);
+          const monthsList = [];
+          if (depSelectedYears.size === 0 && allOps.length > 0) {
+            const startParts = allOps[0].year_month.split('-').map(Number);
+            const endParts = maxYm.split('-').map(Number);
+            let cy = startParts[0], cm = startParts[1];
+            while (cy < endParts[0] || (cy === endParts[0] && cm <= endParts[1])) {
+              monthsList.push([cy, cm]);
+              cm++;
+              if (cm > 12) { cm = 1; cy++; }
+            }
+          } else {
+            yrsToPlot.forEach(function(y) {
+              for (let m = 1; m <= 12; m++) {
+                const ym = y + '-' + String(m).padStart(2, '0');
+                if (ym <= maxYm || byYm.has(ym)) {
+                  monthsList.push([y, m]);
+                }
+              }
+            });
+          }
+          monthsList.forEach(function(pair) {
+            const y = pair[0], m = pair[1];
+            const ym = y + '-' + String(m).padStart(2, '0');
+            const rec = byYm.get(ym);
+            const val = rec ? Number(rec.total_amount.toFixed(2)) : 0;
+            const cnt = rec ? rec.deposit_count : 0;
+            const lbl = MONTH_SHORT[m - 1] + ' ' + y;
+            xVals.push(ym);
+            yVals.push(val);
+            customData.push([ym, lbl, cnt, m]);
+            const isHi = depPinnedYearMonth === ym || (depSelectedMonth !== null && m === depSelectedMonth);
+            colors.push(isHi ? '#34d399' : '#38bdf8');
+          });
+          hoverTemplate = '<b>%{customdata[1]}</b> (%{x})<br>Deposited: <b>%{y:,.2f} ' + curr + '</b><br>Operations: <b>%{customdata[2]}</b><extra></extra>';
+        }
+
+        const headingBox = gd.closest('.chart') ? gd.closest('.chart').querySelector('.chart-heading') : null;
+        if (headingBox) {
+          const modeTxt = depGrouping === 'calendar'
+            ? 'Calendar months summed across ' + yearsLabel
+            : 'Chronological monthly deposits (' + yearsLabel + ') · click any bar to inspect';
+          headingBox.innerHTML = (
+            '<h3>Monthly deposited capital (' + escHtml(curr) + ')</h3>' +
+            '<p>' + escHtml(modeTxt) + ' | Total: ' + fmtNum(yearScopeTotal, 2) + ' ' + escHtml(curr) +
+            ' | Deposits: ' + yearOps.length + '</p>'
+          );
+        }
+
+        const maxBarVal = yVals.length ? Math.max.apply(null, yVals) : 0;
+        const yTop = maxBarVal > 0 ? maxBarVal * 1.16 : 100;
+        const baseYAxis = Object.assign({}, (gd.layout && gd.layout.yaxis) || {});
+        delete baseYAxis.autorange;
+        baseYAxis.range = [0, yTop];
+        baseYAxis.fixedrange = true;
+
+        const baseXAxis = Object.assign({}, (gd.layout && gd.layout.xaxis) || {});
+        delete baseXAxis.range;
+        baseXAxis.autorange = true;
+        baseXAxis.type = 'category';
+        baseXAxis.tickangle = (depGrouping === 'timeline' && xVals.length > 18) ? -35 : 0;
+        baseXAxis.nticks = depGrouping === 'calendar' ? 12 : 14;
+        baseXAxis.fixedrange = true;
+
+        const nextLayout = Object.assign({}, gd.layout || {}, {
+          width: null,
+          autosize: true,
+          transition: { duration: 0 },
+          uirevision: 'dep-' + yearsLabel + '-' + depGrouping,
+          xaxis: baseXAxis,
+          yaxis: baseYAxis
+        });
+        window.Plotly.react(
+          gd,
+          [{
+            type: 'bar',
+            x: xVals,
+            y: yVals,
+            marker: { color: colors, line: { width: 0 }, cornerradius: 4 },
+            customdata: customData,
+            hovertemplate: hoverTemplate
+          }],
+          nextLayout,
+          gd._context
+        );
+        bindDepositsPlotClick();
+      }
+    }
+
+    document.querySelectorAll('[data-dep-year]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        const val = btn.getAttribute('data-dep-year');
+        if (val === 'all') {
+          depSelectedYears.clear();
+          depPinnedYearMonth = null;
+        } else {
+          const yr = Number(val);
+          if (depSelectedYears.has(yr)) {
+            depSelectedYears.delete(yr);
+          } else {
+            depSelectedYears.add(yr);
+          }
+          if (depPinnedYearMonth && depSelectedYears.size > 0) {
+            const pYr = Number(depPinnedYearMonth.split('-')[0]);
+            if (!depSelectedYears.has(pYr)) depPinnedYearMonth = null;
+          }
+        }
+        renderDepositsState();
+      });
+    });
+
+    document.querySelectorAll('[data-dep-grouping]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        depGrouping = btn.getAttribute('data-dep-grouping') || 'timeline';
+        if (depGrouping === 'calendar' && depPinnedYearMonth) {
+          depSelectedMonth = Number(depPinnedYearMonth.split('-')[1]);
+          depPinnedYearMonth = null;
+        }
+        renderDepositsState();
+      });
+    });
+
+    document.querySelectorAll('[data-dep-month]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        const val = btn.getAttribute('data-dep-month');
+        depPinnedYearMonth = null;
+        if (val === 'all') {
+          depSelectedMonth = null;
+        } else {
+          const m = Number(val);
+          depSelectedMonth = (depSelectedMonth === m) ? null : m;
+        }
+        renderDepositsState();
+      });
+    });
+
+    const depResetBtn = document.getElementById('dep-reset-filters');
+    if (depResetBtn) {
+      depResetBtn.addEventListener('click', function() {
+        depSelectedYears.clear();
+        depGrouping = 'timeline';
+        depSelectedMonth = null;
+        depPinnedYearMonth = null;
+        renderDepositsState();
+      });
+    }
+
+    const top10Panel = document.getElementById('deposits-top10-panel');
+    if (top10Panel) {
+      top10Panel.addEventListener('click', function(e) {
+        const row = e.target.closest('tr[data-inspect-ym]');
+        if (!row) return;
+        const ym = row.getAttribute('data-inspect-ym');
+        if (!ym) return;
+        depSelectedMonth = null;
+        depPinnedYearMonth = (depPinnedYearMonth === ym) ? null : ym;
+        renderDepositsState();
+      });
+    }
+    bindDepositsPlotClick();
+
+    // -----------------------------------------------------------------------
+    // Polish PIT-38 Interactive Tax Year & Filter Controller
+    // -----------------------------------------------------------------------
+    let pitSelectedYear = (PIT38_DATA && PIT38_DATA.latest_year) ? String(PIT38_DATA.latest_year) : 'all';
+    let pitSearchQuery = '';
+
+    function buildStatCardJs(label, value, sub, tone, metricKey, extraCls) {
+      const cls = 'stat stat-big stat-' + (tone || 'neutral') + (extraCls ? (' ' + extraCls) : '');
+      const labelHtml = metricKey
+        ? (
+          '<div class="stat-label-row">' +
+          '<span class="stat-label">' + escHtml(label) + '</span>' +
+          '<button type="button" class="metric-info-btn" data-metric-key="' + escHtml(metricKey) + '" ' +
+          'aria-label="Explain ' + escHtml(label) + '" aria-haspopup="dialog" aria-expanded="false">i</button>' +
+          '</div>'
+        )
+        : '<div class="stat-label">' + escHtml(label) + '</div>';
+      const subHtml = sub ? '<div class="stat-sub">' + escHtml(sub) + '</div>' : '';
+      return '<div class="' + cls + '">' + labelHtml + '<div class="stat-value">' + escHtml(value) + '</div>' + subHtml + '</div>';
+    }
+
+    function renderPit38State() {
+      if (!PIT38_DATA) return;
+      document.querySelectorAll('[data-pit-year]').forEach(function(btn) {
+        btn.classList.toggle('active', btn.getAttribute('data-pit-year') === pitSelectedYear);
+      });
+
+      const summary = (pitSelectedYear !== 'all' && PIT38_DATA.by_year && PIT38_DATA.by_year[pitSelectedYear])
+        ? PIT38_DATA.by_year[pitSelectedYear]
+        : PIT38_DATA.all_years_summary;
+      if (!summary) return;
+
+      const scopeLabel = pitSelectedYear === 'all'
+        ? 'All years'
+        : (summary.is_ytd ? (pitSelectedYear + ' YTD estimate') : pitSelectedYear);
+
+      const cardsWrap = document.getElementById('pit38-cards-wrap');
+      if (cardsWrap) {
+        const net = Number(summary.section_c_net_pln || 0);
+        const netSign = net > 0 ? '+' : '';
+        const netTone = net >= 0 ? 'pos' : 'neg';
+        const netSub = net >= 0 ? 'Dochód (Taxable profit)' : 'Strata (Tax loss — 0 PLN tax)';
+        const secCTax = Number(summary.section_c_tax_pln || 0);
+        const divDue = Number(summary.dividends_tax_due_pln || 0);
+        const totTax = Number(summary.total_tax_due_pln || 0);
+
+        cardsWrap.innerHTML = (
+          '<div class="pit38-hero-grid">' +
+          buildStatCardJs(
+            'Total PIT-38 tax payable (' + scopeLabel + ')',
+            fmtNum(totTax, 2) + ' PLN',
+            'statutory full-PLN: ' + Number(summary.total_tax_due_rounded_pln || 0).toLocaleString('en-US') + ' PLN · Section C + Dividend top-up',
+            totTax > 0 ? 'neg' : 'pos',
+            'pit38_total_tax',
+            'pit38-total-card'
+          ) +
+          '</div>' +
+          '<h3 class="pit38-subhead">PIT-38 Section C — Capital gains on equity sales (FIFO, Art. 30b)</h3>' +
+          '<div class="stat-grid pit38-grid">' +
+          buildStatCardJs(
+            'Section C revenue (Przychód)',
+            fmtNum(summary.section_c_revenue_pln, 2) + ' PLN',
+            Number(summary.sold_lots_count || 0) + ' matched FIFO lot slices · D−1 NBP',
+            'neutral',
+            'pit38_revenue'
+          ) +
+          buildStatCardJs(
+            'Deductible costs (Koszty)',
+            fmtNum(summary.section_c_costs_pln, 2) + ' PLN',
+            'FIFO acquisition + commissions (' + fmtNum(summary.section_c_commissions_pln, 2) + ' PLN)',
+            'neutral',
+            'pit38_costs'
+          ) +
+          buildStatCardJs(
+            'Profit / loss (Dochód / Strata)',
+            netSign + fmtNum(net, 2) + ' PLN',
+            netSub,
+            netTone,
+            'pit38_income'
+          ) +
+          buildStatCardJs(
+            'Section C 19% tax due',
+            fmtNum(secCTax, 2) + ' PLN',
+            'tax base: ' + Number(summary.section_c_tax_base_rounded_pln || 0).toLocaleString('en-US') + ' PLN → ' + Number(summary.section_c_tax_rounded_pln || 0).toLocaleString('en-US') + ' PLN rounded',
+            secCTax > 0 ? 'neg' : 'pos',
+            null
+          ) +
+          '</div>' +
+          '<h3 class="pit38-subhead">Dividends & foreign withholding tax (Podatek u źródła, Art. 30a)</h3>' +
+          '<div class="stat-grid pit38-grid">' +
+          buildStatCardJs(
+            'Gross dividends (Przychód)',
+            fmtNum(summary.dividends_gross_pln, 2) + ' PLN',
+            Number(summary.dividends_count || 0) + ' dividend payments at D−1 NBP',
+            'neutral',
+            null
+          ) +
+          buildStatCardJs(
+            'Polish 19% flat tax',
+            fmtNum(summary.dividends_polish_tax_19_pln, 2) + ' PLN',
+            '19% statutory dividend tax before credit',
+            'neutral',
+            null
+          ) +
+          buildStatCardJs(
+            'Foreign WHT credit (Odliczenie)',
+            fmtNum(summary.dividends_wht_credit_pln, 2) + ' PLN',
+            'paid abroad: ' + fmtNum(summary.dividends_wht_paid_pln, 2) + ' PLN (capped at 19%)',
+            Number(summary.dividends_wht_credit_pln || 0) > 0 ? 'pos' : 'neutral',
+            'pit38_wht_credit'
+          ) +
+          buildStatCardJs(
+            'Dividend tax to pay (Do dopłaty)',
+            fmtNum(divDue, 2) + ' PLN',
+            'statutory rounded: ' + Number(summary.dividends_tax_due_rounded_pln || 0).toLocaleString('en-US') + ' PLN · net Polish surcharge',
+            divDue > 0 ? 'neg' : 'pos',
+            null
+          ) +
+          '</div>'
+        );
+      }
+
+      const q = (pitSearchQuery || '').trim().toLowerCase();
+      const matches = (PIT38_DATA.fifo_matches || []).filter(function(m) {
+        if (pitSelectedYear !== 'all' && String(m.tax_year) !== pitSelectedYear) return false;
+        if (!q) return true;
+        return (
+          String(m.symbol).toLowerCase().includes(q) ||
+          String(m.currency).toLowerCase().includes(q) ||
+          String(m.sell_date).includes(q) ||
+          String(m.buy_date).includes(q)
+        );
+      });
+
+      const fifoWrap = document.getElementById('pit38-fifo-wrap');
+      if (fifoWrap) {
+        if (matches.length === 0) {
+          fifoWrap.innerHTML = '<p class="muted">No closed/sold stock lots match ' + escHtml(scopeLabel) + (q ? (' · "' + escHtml(q) + '"') : '') + '.</p>';
+        } else {
+          const fRows = matches.map(function(m) {
+            const gl = Number(m.gain_loss_pln || 0);
+            const glTxt = (gl >= 0 ? '+' : '') + fmtNum(gl, 2) + ' PLN';
+            return (
+              '<tr>' +
+              '<td><b>' + escHtml(m.symbol) + '</b></td>' +
+              '<td>' + escHtml(m.buy_date) + '</td>' +
+              '<td>' + escHtml(m.sell_date) + '</td>' +
+              '<td>' + fmtNum(m.shares, 4) + '</td>' +
+              '<td>' + fmtNum(m.cost_orig, 2) + ' ' + escHtml(m.currency) + '</td>' +
+              '<td>' + fmtNum(m.buy_nbp_rate, 4) + ' <span class="muted">(' + escHtml(m.buy_nbp_date) + ')</span></td>' +
+              '<td>' + fmtNum(m.acquisition_cost_pln, 2) + ' PLN</td>' +
+              '<td>' + fmtNum(m.proceeds_orig, 2) + ' ' + escHtml(m.currency) + '</td>' +
+              '<td>' + fmtNum(m.sell_nbp_rate, 4) + ' <span class="muted">(' + escHtml(m.sell_nbp_date) + ')</span></td>' +
+              '<td>' + fmtNum(m.revenue_pln, 2) + ' PLN</td>' +
+              '<td>' + fmtNum(m.commission_pln, 2) + ' PLN</td>' +
+              '<td>' + glTxt + '</td>' +
+              '</tr>'
+            );
+          }).join('');
+          fifoWrap.innerHTML = (
+            '<div class="table-wrap"><table class="data" id="pit38-fifo-table">' +
+            '<thead><tr><th>Symbol</th><th>Buy date</th><th>Sell date</th><th>Shares</th>' +
+            '<th>Buy cost (orig)</th><th>Buy NBP (D−1)</th><th>Acq. cost (PLN)</th>' +
+            '<th>Proceeds (orig)</th><th>Sell NBP (D−1)</th><th>Revenue (PLN)</th>' +
+            '<th>Comm. (PLN)</th><th>Gain / loss (PLN)</th></tr></thead>' +
+            '<tbody>' + fRows + '</tbody></table></div>'
+          );
+          decorateTableSemantics(fifoWrap);
+          enableTableSorting(fifoWrap);
+        }
+      }
+
+      const divs = (PIT38_DATA.dividends || []).filter(function(d) {
+        if (pitSelectedYear !== 'all' && String(d.tax_year) !== pitSelectedYear) return false;
+        if (!q) return true;
+        return (
+          String(d.symbol).toLowerCase().includes(q) ||
+          String(d.currency).toLowerCase().includes(q) ||
+          String(d.date).includes(q)
+        );
+      });
+
+      const divWrap = document.getElementById('pit38-dividends-wrap');
+      if (divWrap) {
+        if (divs.length === 0) {
+          divWrap.innerHTML = '<p class="muted">No dividends match ' + escHtml(scopeLabel) + (q ? (' · "' + escHtml(q) + '"') : '') + '.</p>';
+        } else {
+          const dRows = divs.map(function(d) {
+            return (
+              '<tr>' +
+              '<td>' + escHtml(d.date) + '</td>' +
+              '<td><b>' + escHtml(d.symbol) + '</b></td>' +
+              '<td>' + fmtNum(d.gross_orig, 2) + ' ' + escHtml(d.currency) + '</td>' +
+              '<td>' + fmtNum(d.wht_orig, 2) + ' ' + escHtml(d.currency) + '</td>' +
+              '<td>' + fmtNum(d.wht_rate_pct, 1) + '%</td>' +
+              '<td>' + fmtNum(d.nbp_rate, 4) + ' <span class="muted">(' + escHtml(d.nbp_date) + ')</span></td>' +
+              '<td>' + fmtNum(d.gross_pln, 2) + ' PLN</td>' +
+              '<td>' + fmtNum(d.polish_tax_19_pln, 2) + ' PLN</td>' +
+              '<td>' + fmtNum(d.wht_credit_pln, 2) + ' PLN</td>' +
+              '<td><b>' + fmtNum(d.tax_due_pln, 2) + ' PLN</b></td>' +
+              '</tr>'
+            );
+          }).join('');
+          divWrap.innerHTML = (
+            '<div class="table-wrap"><table class="data" id="pit38-div-table">' +
+            '<thead><tr><th>Date</th><th>Symbol</th><th>Gross (orig)</th><th>WHT paid (orig)</th>' +
+            '<th>WHT %</th><th>NBP rate (D−1)</th><th>Gross (PLN)</th><th>19% PL tax</th>' +
+            '<th>WHT credit</th><th>Tax due (Do dopłaty)</th></tr></thead>' +
+            '<tbody>' + dRows + '</tbody></table></div>'
+          );
+          decorateTableSemantics(divWrap);
+          enableTableSorting(divWrap);
+        }
+      }
+    }
+
+    document.querySelectorAll('[data-pit-year]').forEach(function(btn) {
+      btn.addEventListener('click', function() {
+        pitSelectedYear = btn.getAttribute('data-pit-year') || 'all';
+        renderPit38State();
+      });
+    });
+
+    const pitSearchInput = document.getElementById('pit38-search-input');
+    if (pitSearchInput) {
+      pitSearchInput.addEventListener('input', function(e) {
+        pitSearchQuery = e.target.value || '';
+        renderPit38State();
+      });
+    }
+
+    const pitExportBtn = document.getElementById('export-pit38-csv');
+    if (pitExportBtn) {
+      pitExportBtn.addEventListener('click', function() {
+        if (!PIT38_DATA) return;
+        const rows = [
+          ['Category', 'TaxYear', 'Symbol', 'BuyDate', 'SellOrDivDate', 'Shares', 'Currency', 'BuyNBP_D1', 'SellOrDivNBP_D1', 'CostOrWhtPLN', 'RevenueOrGrossPLN', 'TaxOrGainPLN']
+        ];
+        (PIT38_DATA.fifo_matches || []).filter(function(m) {
+          return pitSelectedYear === 'all' || String(m.tax_year) === pitSelectedYear;
+        }).forEach(function(m) {
+          rows.push([
+            'FIFO_SALE', m.tax_year, m.symbol, m.buy_date, m.sell_date, m.shares,
+            m.currency, m.buy_nbp_rate, m.sell_nbp_rate, m.deductible_cost_pln,
+            m.revenue_pln, m.gain_loss_pln
+          ]);
+        });
+        (PIT38_DATA.dividends || []).filter(function(d) {
+          return pitSelectedYear === 'all' || String(d.tax_year) === pitSelectedYear;
+        }).forEach(function(d) {
+          rows.push([
+            'DIVIDEND', d.tax_year, d.symbol, '', d.date, '',
+            d.currency, '', d.nbp_rate, d.wht_credit_pln,
+            d.gross_pln, d.tax_due_pln
+          ]);
+        });
+        const csv = '\\ufeff' + rows.map(function(row) {
+          return row.map(function(v) { return '"' + String(v == null ? '' : v).replace(/"/g, '""') + '"'; }).join(';');
+        }).join('\\r\\n');
+        const url = URL.createObjectURL(new Blob([csv], {type: 'text/csv;charset=utf-8;'}));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'pit38-' + pitSelectedYear + '.csv';
+        a.click();
+        setTimeout(function() { URL.revokeObjectURL(url); }, 1000);
+      });
     }
 
     // Company P&L interactive filters
@@ -1932,11 +3682,12 @@ def render_html_report(data: ReportData) -> str:
         for c in ("pln", "usd", "eur")
     )
 
-    # Panel 1: Overview with alpha and beta in the risk section.
+    # Panel 1: Overview with alpha, beta, win rate, profit factor, and interactive KPI definitions.
     panel_overview = (
         "<section id='overview' class='tab-panel active' role='tabpanel'>"
         "<div class='panel-block' id='overview-kpis'>"
         "<h2>Portfolio overview</h2>"
+        "<p class='section-desc'>Hover or click any <b>i</b> badge to view plain-English metric definitions, examples, and benchmarks.</p>"
         f"<div id='live-kpi'>{_kpi_section(data)}</div>"
         "</div>"
         "<div class='panel-block' id='nav-history'>"
@@ -1944,14 +3695,17 @@ def render_html_report(data: ReportData) -> str:
         "</div>"
         "<div class='panel-block' id='risk-monthly'>"
         "<h2>Risk and monthly TWR returns</h2>"
-        "<p class='section-desc'>Volatility, alpha, beta, and a monthly return heatmap.</p>"
-        f"<div id='live-risk'>{_risk_cards_html(data.risk)}</div>"
+        "<p class='section-desc'>Volatility, Sharpe, Sortino, alpha, beta, trade statistics, and a monthly return heatmap.</p>"
+        f"<div id='live-risk'>{_risk_cards_html(data.risk, data.trade_stats)}</div>"
         f"{_chart(plot_monthly_returns_heatmap(data.twr_returns, data.currency), plot_id='chart-monthly')}"
         "</div>"
         "</section>"
     )
 
-    # Panel 2: Benchmarks (default 4 indices + single clean selector & custom search)
+    # Panel 2: Deposit Analytics & Monthly Cash Contributions
+    panel_deposits = _deposits_section_html(data)
+
+    # Panel 3: Benchmarks (default 4 indices + single clean selector & custom search)
     panel_benchmarks = (
         "<section id='benchmarks' class='tab-panel' role='tabpanel'>"
         "<div class='panel-block'>"
@@ -2029,11 +3783,17 @@ def render_html_report(data: ReportData) -> str:
         "</section>"
     )
 
+    # Panel 6: Polish PIT-38 Tax Settlement
+    panel_pit38 = _pit38_section_html(data)
+
     account_ids = ", ".join(account.account_id for account in data.accounts)
     live_script = (
         _LIVE_SCRIPT.replace("__CURRENCY_JSON__", json.dumps(data.currency))
         .replace("__DEMO_JSON__", json.dumps(data.is_demo))
         .replace("__CUSTOM_BENCHMARKS_JSON__", json.dumps(data.custom_benchmarks))
+        .replace("__METRIC_DEFINITIONS_JSON__", json.dumps(definitions_json_map()))
+        .replace("__DEPOSITS_JSON__", json.dumps(_deposits_payload(data)))
+        .replace("__PIT38_JSON__", json.dumps(_ensure_pit38(data).to_payload()))
     )
 
     data_notice = (
@@ -2091,9 +3851,17 @@ def render_html_report(data: ReportData) -> str:
       <div class="cloud-title">Overview</div>
     </button>
 
-    <button type="button" class="nav-cloud" data-target="benchmarks" role="tab" aria-selected="false">
+    <button type="button" class="nav-cloud" data-target="deposits" role="tab" aria-selected="false">
       <div class="cloud-top">
         <span class="cloud-step">02</span>
+        <span class="cloud-arrow">→</span>
+      </div>
+      <div class="cloud-title">Deposits</div>
+    </button>
+
+    <button type="button" class="nav-cloud" data-target="benchmarks" role="tab" aria-selected="false">
+      <div class="cloud-top">
+        <span class="cloud-step">03</span>
         <span class="cloud-arrow">→</span>
       </div>
       <div class="cloud-title">Benchmarks</div>
@@ -2101,7 +3869,7 @@ def render_html_report(data: ReportData) -> str:
 
     <button type="button" class="nav-cloud" data-target="holdings" role="tab" aria-selected="false">
       <div class="cloud-top">
-        <span class="cloud-step">03</span>
+        <span class="cloud-step">04</span>
         <span class="cloud-arrow">→</span>
       </div>
       <div class="cloud-title">Holdings</div>
@@ -2109,18 +3877,29 @@ def render_html_report(data: ReportData) -> str:
 
     <button type="button" class="nav-cloud" data-target="costs" role="tab" aria-selected="false">
       <div class="cloud-top">
-        <span class="cloud-step">04</span>
+        <span class="cloud-step">05</span>
         <span class="cloud-arrow">→</span>
       </div>
-      <div class="cloud-title">FX, costs and income</div>
+      <div class="cloud-title">FX, costs &amp; income</div>
+    </button>
+
+    <button type="button" class="nav-cloud" data-target="pit38" role="tab" aria-selected="false">
+      <div class="cloud-top">
+        <span class="cloud-step">06</span>
+        <span class="cloud-arrow">→</span>
+      </div>
+      <div class="cloud-title">PIT-38</div>
     </button>
   </div>
 </div>
 
 {panel_overview}
+{panel_deposits}
 {panel_benchmarks}
 {panel_holdings}
 {panel_costs}
+{panel_pit38}
+{_metric_popover_html()}
 
 <footer>
 Generated <span id="live-generated">{generated}</span> UTC by XTB Portfolio Analyzer. {data_notice}

@@ -32,6 +32,8 @@ class Transaction:
     price: Decimal | None = None
     comment: str = ""
     realized_pnl: Decimal | None = None
+    commission: Decimal | None = None
+    raw_type: str = ""
 
 
 @dataclass

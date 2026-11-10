@@ -157,6 +157,7 @@ def build_nav_series(
             holdings_rows.append({"date": day, "symbol": symbol, "market_value_local": value})
 
     nav = pd.DataFrame(nav_rows).set_index("date")
+    nav.attrs["splits"] = dict(prices.attrs.get("splits", {})) if not prices.empty else {}
     holdings = pd.DataFrame(holdings_rows)
     positions = _positions_frame(
         state,
