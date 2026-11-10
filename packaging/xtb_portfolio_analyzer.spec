@@ -33,7 +33,16 @@ datas += [
 ]
 binaries = []
 if sys.platform == "win32":
-    platform_hidden = ["webview.platforms.edgechromium"]
+    platform_hidden = ["webview.platforms.edgechromium", "clr", "pythonnet", "clr_loader"]
+    collect_packages = (
+        "webview",
+        "pythonnet",
+        "clr_loader",
+        "tkinterdnd2",
+        "plotly",
+        "yfinance",
+        "certifi",
+    )
 elif sys.platform == "darwin":
     platform_hidden = [
         "webview.platforms.cocoa",
@@ -46,8 +55,10 @@ elif sys.platform == "darwin":
         "Security",
         "UniformTypeIdentifiers",
     ]
+    collect_packages = ("webview", "tkinterdnd2", "plotly", "yfinance", "certifi")
 else:
     platform_hidden = []
+    collect_packages = ("webview", "tkinterdnd2", "plotly", "yfinance", "certifi")
 
 hiddenimports = [
     "webview",
@@ -66,7 +77,7 @@ hiddenimports = [
     "requests",
 ]
 
-for package in ("webview", "tkinterdnd2", "plotly", "yfinance", "certifi"):
+for package in collect_packages:
     try:
         pkg_datas, pkg_binaries, pkg_hidden = collect_all(package)
         datas += pkg_datas
@@ -74,6 +85,13 @@ for package in ("webview", "tkinterdnd2", "plotly", "yfinance", "certifi"):
         hiddenimports += pkg_hidden
     except Exception:
         datas += collect_data_files(package)
+
+if sys.platform == "win32":
+    import webview as _webview_mod
+
+    _webview_lib = Path(_webview_mod.__file__).resolve().parent / "lib"
+    if _webview_lib.is_dir():
+        datas.append((str(_webview_lib), "webview/lib"))
 
 a = Analysis(
     [str(ROOT / "run_desktop.py")],

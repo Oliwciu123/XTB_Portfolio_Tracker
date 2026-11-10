@@ -169,6 +169,27 @@ def test_metric_definitions_catalog_complete_and_valid():
             assert rng["tone"] in {"pos", "neutral", "neg"}
 
 
+def test_rendered_report_includes_deposits_definitions_and_pit38_sections(tmp_path: Path):
+    """Self-contained HTML includes Deposits, Metric Definitions popover, and PIT-38 sections."""
+    market = MarketData.from_examples(EXAMPLES)
+    report_path = generate_report(EXAMPLES, tmp_path, market_data=market, refresh_latest=False)
+    html = report_path.read_text(encoding="utf-8")
+
+    assert "id='deposits'" in html
+    assert 'id="chart-deposits"' in html
+    assert "id='deposits-top10-table'" in html
+    assert "id='metric-popover'" in html
+    assert "data-metric-key='sharpe'" in html
+    assert "data-metric-key='win_rate'" in html
+    assert "data-metric-key='profit_factor'" in html
+    assert "id='pit38'" in html
+    assert "id='pit38-fifo-table'" in html
+    assert "id='pit38-div-table'" in html
+    assert "__METRIC_DEFINITIONS_JSON__" not in html
+    assert "__DEPOSITS_JSON__" not in html
+    assert "__PIT38_JSON__" not in html
+
+
 def test_playwright_interactive_deposits_definitions_and_pit38(tmp_path: Path):
     """End-to-end browser verification of Deposits filters, Metric Popovers, and PIT-38 switching."""
     playwright_mod = pytest.importorskip("playwright.sync_api")
@@ -176,7 +197,12 @@ def test_playwright_interactive_deposits_definitions_and_pit38(tmp_path: Path):
     report_path = generate_report(EXAMPLES, tmp_path, market_data=market, refresh_latest=False)
 
     with playwright_mod.sync_playwright() as pw:
-        browser = pw.chromium.launch(headless=True)
+        try:
+            browser = pw.chromium.launch(headless=True)
+        except Exception as exc:
+            if "Executable doesn't exist" in str(exc):
+                pytest.skip("Playwright Chromium browser binary is not installed")
+            raise
         page = browser.new_page(viewport={"width": 1440, "height": 900})
         errors: list[str] = []
         page.on("pageerror", lambda err: errors.append(str(err)))

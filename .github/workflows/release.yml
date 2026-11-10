@@ -27,9 +27,12 @@ jobs:
           $verifyDir = Join-Path $env:RUNNER_TEMP "xtb-win-verify"
           Expand-Archive -Path "dist/XTBPortfolioAnalyzer-Windows.zip" -DestinationPath $verifyDir -Force
           $checkJson = Join-Path $verifyDir "check.json"
-          & "$verifyDir/XTBPortfolioAnalyzer/XTBPortfolioAnalyzer.exe" --check-install $checkJson
-          if ($LASTEXITCODE -ne 0) { throw "Windows packaged executable check failed" }
-          Get-Content $checkJson
+          $exePath = Join-Path $verifyDir "XTBPortfolioAnalyzer\XTBPortfolioAnalyzer.exe"
+          $proc = Start-Process -FilePath $exePath -ArgumentList @("--check-install", $checkJson) -Wait -PassThru
+          if (Test-Path $checkJson) { Get-Content $checkJson }
+          if ($proc.ExitCode -ne 0) { throw "Windows packaged executable check failed with exit code $($proc.ExitCode)" }
+          $payload = Get-Content $checkJson -Raw | ConvertFrom-Json
+          if (-not $payload.ok) { throw "Windows check-install payload not ok: $($payload.error)" }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-archive
