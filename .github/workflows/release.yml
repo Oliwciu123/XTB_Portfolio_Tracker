@@ -1,0 +1,89 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Build Windows archive
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.5'
+          python-version: '3.13'
+          enable-cache: true
+      - name: Build Windows portable ZIP
+        run: uv run --locked --extra desktop --extra build python packaging/build_release.py
+      - name: Verify packaged Windows executable
+        shell: pwsh
+        run: |
+          $verifyDir = Join-Path $env:RUNNER_TEMP "xtb-win-verify"
+          Expand-Archive -Path "dist/XTBPortfolioAnalyzer-Windows.zip" -DestinationPath $verifyDir -Force
+          $checkJson = Join-Path $verifyDir "check.json"
+          & "$verifyDir/XTBPortfolioAnalyzer/XTBPortfolioAnalyzer.exe" --check-install $checkJson
+          if ($LASTEXITCODE -ne 0) { throw "Windows packaged executable check failed" }
+          Get-Content $checkJson
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-archive
+          path: dist/XTBPortfolioAnalyzer-Windows.zip
+          if-no-files-found: error
+
+  build-macos:
+    name: Build macOS archive
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: '0.12.5'
+          python-version: '3.13'
+          enable-cache: true
+      - name: Build macOS portable ZIP
+        run: uv run --locked --extra desktop --extra build python packaging/build_release.py
+      - name: Verify packaged macOS app bundle
+        run: |
+          VERIFY_DIR="${RUNNER_TEMP}/xtb-macos-verify"
+          mkdir -p "$VERIFY_DIR"
+          ditto -x -k "dist/XTBPortfolioAnalyzer-macOS.zip" "$VERIFY_DIR"
+          "$VERIFY_DIR/XTBPortfolioAnalyzer/XTBPortfolioAnalyzer.app/Contents/MacOS/XTBPortfolioAnalyzer" --check-install "$VERIFY_DIR/check.json"
+          cat "$VERIFY_DIR/check.json"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: macos-archive
+          path: dist/XTBPortfolioAnalyzer-macOS.zip
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Verify release notes and archives
+        run: |
+          test -f "docs/RELEASE_NOTES_${GITHUB_REF_NAME}.md"
+          test -f "release-assets/XTBPortfolioAnalyzer-Windows.zip"
+          test -f "release-assets/XTBPortfolioAnalyzer-macOS.zip"
+          ls -lh release-assets/
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@8a0cd651e5b2365bd640854a3fa5dfc70e4875f3 # v3.0.4
+        with:
+          name: XTB Portfolio Tracker ${{ github.ref_name }}
+          body_path: docs/RELEASE_NOTES_${{ github.ref_name }}.md
+          files: |
+            release-assets/XTBPortfolioAnalyzer-Windows.zip
+            release-assets/XTBPortfolioAnalyzer-macOS.zip
+          fail_on_unmatched_files: true
+          make_latest: true
