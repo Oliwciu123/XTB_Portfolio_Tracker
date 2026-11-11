@@ -61,7 +61,104 @@ def section(page: Page, name: str) -> None:
     settled(page)
 
 
-def capture_report(channel: str | None) -> None:
+def native_hover_boxes(page: Page) -> list[dict[str, object]]:
+    return page.evaluate(
+        """() => [...document.querySelectorAll('.hoverlayer .hovertext, .hoverlayer .legend')].map(node => {
+            const box = node.getBoundingClientRect();
+            return {w: box.width, h: box.height};
+        }).filter(item => item.w > 0.5 || item.h > 0.5)"""
+    )
+
+
+_HOVER_SECTION = {
+    "chart-nav": "overview",
+    "chart-monthly": "overview",
+    "chart-deposits": "deposits",
+    "chart-benchmark": "benchmarks",
+    "chart-pnl": "holdings",
+    "chart-holdings": "holdings",
+    "chart-currency": "holdings",
+    "chart-sector": "holdings",
+}
+
+
+def show_custom_hover(page: Page, plot_id: str) -> None:
+    """Move onto a chart and require the custom card without a Plotly tooltip box."""
+    page.locator(f'[data-target="{_HOVER_SECTION[plot_id]}"]').click()
+    page.wait_for_timeout(250)
+    page.locator(f"#{plot_id}").scroll_into_view_if_needed()
+    target = page.locator(f"#{plot_id} .nsewdrag")
+    box = target.bounding_box() if target.count() else None
+    if box is None:
+        slice_box = page.locator(f"#{plot_id} .slice").first.bounding_box()
+        if slice_box is None:
+            raise AssertionError(f"No plot area for {plot_id}")
+        page.mouse.move(
+            slice_box["x"] + slice_box["width"] * 0.5,
+            slice_box["y"] + slice_box["height"] * 0.5,
+        )
+    else:
+        page.mouse.move(box["x"] + box["width"] * 0.58, box["y"] + box["height"] * 0.42)
+    page.wait_for_function(
+        """() => {
+            const card = document.getElementById('chart-hover-card');
+            return card && !card.hidden && card.querySelector('.chc-val');
+        }"""
+    )
+    leftover = native_hover_boxes(page)
+    if leftover:
+        raise AssertionError(f"Native Plotly hover is visible on {plot_id}: {leftover}")
+
+
+def retypeset_formula(page: Page) -> None:
+    page.evaluate(
+        """async () => {
+            const el = document.getElementById('guide-formula');
+            const tex = el.getAttribute('data-tex') || '';
+            el.textContent = '\\\\[' + tex + '\\\\]';
+            if (window.MathJax && MathJax.typesetPromise) await MathJax.typesetPromise([el]);
+        }"""
+    )
+    page.wait_for_function("() => document.querySelector('#guide-formula svg path')")
+
+
+def shoot_formulas(page: Page, folder: Path, label: str, *, capture: bool = True) -> None:
+    folder.mkdir(parents=True, exist_ok=True)
+    keys = page.locator("#guide-jump option").evaluate_all("opts => opts.map(o => o.value)")
+    for key in keys:
+        page.select_option("#guide-jump", key)
+        page.wait_for_function(
+            """(key) => document.getElementById('guide-jump').value === key
+                && document.querySelector('#guide-formula svg path')""",
+            arg=key,
+        )
+        retypeset_formula(page)
+        fit = page.evaluate(
+            """() => {
+                const host = document.getElementById('guide-formula');
+                const svg = host.querySelector('svg[role="img"]');
+                const hostBox = host.getBoundingClientRect();
+                const svgBox = svg.getBoundingClientRect();
+                return {
+                    svgH: svgBox.height,
+                    top: svgBox.top - hostBox.top,
+                    bottom: hostBox.bottom - svgBox.bottom
+                };
+            }"""
+        )
+        if fit["svgH"] < 12 or fit["top"] < -2 or fit["bottom"] < -2:
+            raise AssertionError(f"{label} {key} formula is clipped: {fit}")
+        if capture:
+            page.locator('#guide-formula svg[role="img"]').screenshot(
+                path=folder / f"{label}-{key}.png", animations="disabled"
+            )
+
+
+def capture_report(
+    channel: str | None,
+    media_dir: Path | None = None,
+    formula_dir: Path | None = None,
+) -> None:
     folder = ROOT / "examples"
     report = generate_report(
         data_dir=folder,
@@ -136,6 +233,48 @@ def capture_report(channel: str | None) -> None:
         page.locator(".panel-block").filter(has=page.locator("#live-attribution")).screenshot(
             path=IMAGES / "fx-attribution.png", animations="disabled"
         )
+        section(page, "deposits")
+        page.mouse.move(2, 2)
+        page.locator("#deposits").evaluate("el => el.scrollIntoView({block: 'start'})")
+        page.screenshot(path=IMAGES / "deposits.png", animations="disabled")
+        section(page, "pit38")
+        page.locator("#pit38").evaluate("el => el.scrollIntoView({block: 'start'})")
+        page.screenshot(path=IMAGES / "pit38.png", animations="disabled")
+        for plot_id in (
+            "chart-nav",
+            "chart-deposits",
+            "chart-monthly",
+            "chart-benchmark",
+            "chart-pnl",
+            "chart-holdings",
+            "chart-currency",
+            "chart-sector",
+        ):
+            show_custom_hover(page, plot_id)
+        show_custom_hover(page, "chart-nav")
+        page.screenshot(path=IMAGES / "hover-readout.png", animations="disabled")
+        if media_dir is not None:
+            media_dir.mkdir(parents=True, exist_ok=True)
+            page.screenshot(path=media_dir / "v130-single-hover-readout.png", animations="disabled")
+        page.mouse.move(2, 2)
+        page.locator('[data-metric-key="sharpe"]').first.click()
+        page.locator("#metric-popover").wait_for(state="visible")
+        page.screenshot(path=IMAGES / "indicator-popover.png", animations="disabled")
+        if media_dir is not None:
+            page.screenshot(path=media_dir / "v130-indicator-popover.png", animations="disabled")
+        page.locator("#metric-popover-learn").click()
+        page.wait_for_function("() => document.querySelector('#guide-formula svg path')")
+        page.evaluate("window.scrollTo(0, 0)")
+        page.screenshot(path=IMAGES / "indicator-guide.png", animations="disabled")
+        if media_dir is not None:
+            page.screenshot(path=media_dir / "v130-indicator-guide-page.png", animations="disabled")
+        if formula_dir is not None:
+            shoot_formulas(page, formula_dir, "desktop")
+            page.set_viewport_size({"width": 390, "height": 844})
+            page.evaluate("() => document.body.classList.add('formula-review-mobile')")
+            shoot_formulas(page, formula_dir, "mobile-width", capture=False)
+            page.set_viewport_size({"width": 1400, "height": 900})
+            shoot_formulas(page, formula_dir, "mobile")
         assert not errors, f"JavaScript errors: {errors}"
         browser.close()
 
@@ -248,13 +387,17 @@ def main() -> None:
     parser.add_argument(
         "--desktop-exe", type=Path, help="Use a packaged executable for native captures."
     )
+    parser.add_argument("--media-dir", type=Path, help="Also write the v1.3.0 review shots here.")
+    parser.add_argument(
+        "--formula-dir", type=Path, help="Write one formula screenshot per indicator and width."
+    )
     args = parser.parse_args()
     if args.desktop_exe:
         if not args.native:
             parser.error("--desktop-exe requires --native")
         args.desktop_exe = args.desktop_exe.resolve(strict=True)
     IMAGES.mkdir(parents=True, exist_ok=True)
-    capture_report(args.channel)
+    capture_report(args.channel, media_dir=args.media_dir, formula_dir=args.formula_dir)
     if args.native:
         capture_native(demo=False, executable=args.desktop_exe)
         capture_native(demo=True, executable=args.desktop_exe)

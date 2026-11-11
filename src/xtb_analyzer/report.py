@@ -53,10 +53,12 @@ from xtb_analyzer.flows import (
     top_deposit_months,
 )
 from xtb_analyzer.fx import fetch_fx_rates
+from xtb_analyzer.indicator_guides import build_indicator_guides
 from xtb_analyzer.market_data import MarketData
 from xtb_analyzer.metrics import company_pnl_summary, format_company_pnl_table
 from xtb_analyzer.models import Account
 from xtb_analyzer.parser import discover_export_files, load_accounts
+from xtb_analyzer.paths import asset_path
 from xtb_analyzer.portfolio import build_nav_series
 from xtb_analyzer.prices import fetch_benchmarks, xtb_to_yahoo
 from xtb_analyzer.returns import ReturnMeasures, compute_return_measures, twr_daily_returns
@@ -336,11 +338,29 @@ def _fmt_pct(value: float | None, decimals: int = 2, sign: bool = True) -> str:
 
 
 _FIXED_CHARTS = {"chart-monthly", "chart-pnl", "chart-holdings", "chart-deposits"}
+_HOVER_KIND = {
+    "chart-nav": "money-time",
+    "chart-benchmark": "pct-time",
+    "chart-deposits": "money-category",
+    "chart-monthly": "heatmap-pct",
+    "chart-pnl": "money-hbar",
+    "chart-holdings": "pct-hbar",
+    "chart-currency": "pie",
+    "chart-sector": "pie",
+}
+
+
+def _silence_native_hover(fig: go.Figure) -> go.Figure:
+    """Drop Plotly's own hover label. The report draws one custom card instead."""
+    if fig.data:
+        fig.update_traces(hoverinfo="none")
+    return fig
 
 
 def _report_figure(fig: go.Figure, plot_id: str | None = None) -> go.Figure:
     fig = go.Figure(fig)
     fig.update_layout(width=None, autosize=True, title_text="", margin_t=24)
+    _silence_native_hover(fig)
     if plot_id in _FIXED_CHARTS:
         fig.update_layout(dragmode=False)
         fig.update_xaxes(fixedrange=True)
@@ -365,7 +385,19 @@ def _fig_html(fig: go.Figure, plot_id: str | None = None) -> str:
     config = dict(PLOTLY_SHOW_CONFIG)
     if plot_id in _FIXED_CHARTS:
         config.update(scrollZoom=False, doubleClick=False)
-    return fig.to_html(full_html=False, include_plotlyjs=False, config=config, div_id=plot_id)
+    html = fig.to_html(full_html=False, include_plotlyjs=False, config=config, div_id=plot_id)
+    kind = _HOVER_KIND.get(plot_id or "", "auto")
+    if plot_id:
+        html = html.replace(
+            f'id="{plot_id}"',
+            f'id="{plot_id}" data-hover-kind="{kind}"',
+            1,
+        )
+    return html
+
+
+def _mathjax_bundle() -> str:
+    return asset_path("assets", "mathjax", "tex-svg.js").read_text(encoding="utf-8")
 
 
 def _chart(fig: go.Figure, extra_class: str = "", plot_id: str | None = None) -> str:
@@ -1194,36 +1226,53 @@ def _pit38_section_html(data: ReportData) -> str:
 def _metric_popover_html(generated: str, data_notice: str) -> str:
     return (
         "<div id='metric-backdrop' class='metric-backdrop' hidden></div>"
-        "<div id='metric-popover' class='metric-popover' role='dialog' aria-modal='false' "
-        "aria-labelledby='metric-popover-title' tabindex='-1' hidden>"
+        "<div id='metric-popover' class='metric-popover metric-popover-short' role='dialog' "
+        "aria-modal='false' aria-labelledby='metric-popover-title' tabindex='-1' hidden>"
         "<div class='metric-popover-header'>"
         "<div>"
-        "<div class='metric-popover-eyebrow'>Indicator guide</div>"
+        "<div class='metric-popover-eyebrow'>Indicator</div>"
         "<h4 id='metric-popover-title' class='metric-popover-title'></h4>"
         "</div>"
         "<button type='button' id='metric-popover-close' class='metric-popover-close' "
-        "aria-label='Close metric definition'>×</button>"
+        "aria-label='Close indicator summary'>×</button>"
         "</div>"
-        "<div id='metric-popover-formula' class='metric-popover-formula'></div>"
-        "<div class='metric-popover-section'>"
-        "<div class='metric-popover-kicker'>What it measures</div>"
-        "<p id='metric-popover-explanation'></p>"
+        "<p id='metric-popover-summary' class='metric-popover-summary'></p>"
+        "<div class='metric-popover-current'>"
+        "<span class='metric-popover-kicker'>This portfolio</span>"
+        "<strong id='metric-popover-value'></strong>"
         "</div>"
-        "<div class='metric-popover-section metric-popover-example-box'>"
-        "<div class='metric-popover-kicker'>Numerical example</div>"
-        "<p id='metric-popover-example'></p>"
+        "<button type='button' id='metric-popover-learn' class='metric-learn-btn'>Learn more</button>"
         "</div>"
-        "<div id='metric-popover-ranges-wrap' class='metric-popover-section'>"
-        "<div class='metric-popover-kicker'>Reference benchmarks</div>"
-        "<div id='metric-popover-ranges' class='metric-ranges-list'></div>"
+        "<div id='indicator-guide' class='indicator-guide' hidden>"
+        "<div class='guide-topbar'>"
+        "<button type='button' id='guide-back' class='guide-back'>← Back</button>"
+        "<div class='guide-nav'>"
+        "<button type='button' id='guide-prev' class='guide-nav-btn'>Previous</button>"
+        "<label class='guide-jump-label'>Indicator"
+        "<select id='guide-jump'></select>"
+        "</label>"
+        "<button type='button' id='guide-next' class='guide-nav-btn'>Next</button>"
         "</div>"
+        "</div>"
+        "<article class='guide-article'>"
+        "<p class='guide-kicker'>Indicator guide</p>"
+        "<h2 id='guide-title'></h2>"
+        "<p id='guide-summary' class='guide-summary'></p>"
+        "<div class='guide-current'><span>This portfolio</span><strong id='guide-value'></strong></div>"
+        "<section><h3>What it measures</h3><p id='guide-explanation'></p></section>"
+        "<section><h3>Formula</h3><div id='guide-formula' class='guide-formula'></div></section>"
+        "<section><h3>Calculation for this portfolio</h3><ol id='guide-steps' class='guide-steps'></ol></section>"
+        "<section><h3>Simple example</h3><p id='guide-example'></p></section>"
+        "<section><h3>Reference ranges</h3><p id='guide-range-note' class='guide-range-note'></p>"
+        "<div id='guide-ranges' class='metric-ranges-list'></div></section>"
+        "</article>"
         "</div>"
         "<div id='about-popover' class='metric-popover about-popover' role='dialog' "
         "aria-modal='false' aria-labelledby='about-popover-title' tabindex='-1' hidden>"
         "<div class='metric-popover-header'>"
         "<div>"
         "<div class='metric-popover-eyebrow'>Report metadata</div>"
-        "<h4 id='about-popover-title' class='metric-popover-title'>XTB Portfolio Analyzer v1.2.0</h4>"
+        "<h4 id='about-popover-title' class='metric-popover-title'>XTB Portfolio Tracker v1.3.0</h4>"
         "</div>"
         "<button type='button' id='about-popover-close' class='metric-popover-close' "
         "aria-label='Close about dialog'>×</button>"
@@ -2257,9 +2306,10 @@ td.live-updated { animation: cellFlash 1.1s ease-out; }
 @media (max-width: 700px) {
   .chart-zoom-cue { display: none; }
 }
-#chart-benchmark .hoverlayer g.hovertext,
-#chart-nav .hoverlayer g.hovertext {
-  opacity: 0 !important;
+.js-plotly-plot .hoverlayer .hovertext,
+.js-plotly-plot .hoverlayer .legend {
+  display: none !important;
+  visibility: hidden !important;
   pointer-events: none !important;
 }
 .chart-hover-card {
@@ -2344,6 +2394,157 @@ td.live-updated { animation: cellFlash 1.1s ease-out; }
 }
 .chc-val.is-pos { color: #34d399; }
 .chc-val.is-neg { color: #f87171; }
+.metric-popover-short { width: min(360px, calc(100vw - 28px)); }
+.metric-popover-summary {
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.45;
+}
+.metric-popover-current, .guide-current {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(14, 165, 233, 0.08);
+  border: 1px solid rgba(34, 211, 238, 0.28);
+  margin-bottom: 12px;
+}
+.metric-popover-current strong, .guide-current strong {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 16px;
+  color: #e0f2fe;
+}
+.metric-learn-btn, .guide-nav-btn, .guide-back {
+  appearance: none;
+  border-radius: 10px;
+  font-family: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.metric-learn-btn {
+  width: 100%;
+  border: 1px solid rgba(34, 211, 238, 0.55);
+  background: rgba(14, 165, 233, 0.16);
+  color: #e0f2fe;
+  padding: 9px 12px;
+  font-size: 13.5px;
+}
+.metric-learn-btn:hover { background: rgba(14, 165, 233, 0.28); }
+.indicator-guide {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  overflow: auto;
+  background: #090f1d;
+  color: var(--text);
+}
+.guide-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 12px 16px;
+  background: rgba(9, 15, 29, 0.94);
+  border-bottom: 1px solid var(--border);
+}
+.guide-back, .guide-nav-btn {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 12px;
+  font-size: 13px;
+}
+.guide-nav { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.guide-jump-label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--muted); }
+.guide-jump-label select {
+  min-width: 220px;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 8px;
+  font: inherit;
+}
+.guide-article { max-width: 860px; margin: 0 auto; padding: 22px 18px 64px; }
+.guide-kicker {
+  margin: 0 0 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 11px;
+  color: #67e8f9;
+  font-weight: 700;
+}
+.guide-article h2 { margin: 0 0 8px; font-size: 30px; letter-spacing: -0.03em; }
+.guide-summary { margin: 0 0 16px; font-size: 16px; line-height: 1.5; color: #cbd5e1; }
+.guide-article h3 { margin: 22px 0 8px; font-size: 15px; color: #e2e8f0; }
+.guide-article section p { margin: 0; line-height: 1.55; color: #cbd5e1; }
+.guide-formula {
+  overflow-x: auto;
+  overflow-y: visible;
+  text-align: center;
+  padding: 18px 12px;
+  border-radius: 14px;
+  background: #0b1224;
+  border: 1px solid rgba(34, 211, 238, 0.22);
+  font-size: 20px;
+}
+.guide-formula mjx-container, .guide-formula svg {
+  color: #f8fafc !important;
+  overflow: visible !important;
+  max-width: none;
+}
+.guide-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.guide-step {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 16px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.72);
+  border: 1px solid rgba(51, 65, 85, 0.8);
+}
+.guide-step.is-result {
+  border-color: rgba(34, 211, 238, 0.55);
+  background: rgba(14, 165, 233, 0.1);
+}
+.guide-step b { display: block; color: #f8fafc; }
+.guide-step span { color: #94a3b8; font-size: 13px; line-height: 1.4; }
+.guide-step em {
+  font-style: normal;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 700;
+  color: #e0f2fe;
+  white-space: nowrap;
+}
+.guide-range-note { margin: 0 0 8px !important; color: #94a3b8 !important; font-size: 13px; }
+.metric-range-item.is-active {
+  outline: 1px solid rgba(34, 211, 238, 0.7);
+  background: rgba(14, 165, 233, 0.12);
+}
+.metric-range-you {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(34, 211, 238, 0.18);
+  color: #e0f2fe;
+  font-size: 11px;
+  font-weight: 700;
+}
+body.formula-review-mobile .guide-formula { font-size: 16px; }
+@media (max-width: 700px) {
+  .guide-article h2 { font-size: 24px; }
+  .guide-formula { font-size: 16px; padding: 14px 8px; }
+  .guide-step { grid-template-columns: 1fr; }
+  .guide-jump-label select { min-width: 0; width: 100%; }
+}
 .table-collapse-bar {
   display: flex;
   flex-wrap: wrap;
@@ -2595,6 +2796,7 @@ _LIVE_SCRIPT = """
   const IS_DEMO = __DEMO_JSON__;
   const PRELOADED_BENCHMARKS = __CUSTOM_BENCHMARKS_JSON__;
   const METRIC_DEFINITIONS = __METRIC_DEFINITIONS_JSON__;
+  const INDICATOR_GUIDES = __INDICATOR_GUIDES_JSON__;
   const DEPOSITS_DATA = __DEPOSITS_JSON__;
   const PIT38_DATA = __PIT38_JSON__;
   const POLL_INTERVAL_MS = 5000;
@@ -2614,14 +2816,33 @@ _LIVE_SCRIPT = """
     if (card) card.hidden = true;
   }
 
+  function refreshHoverAtPointer() {
+    if (!lastPointer || lastPointer.x < 2 || lastPointer.y < 2) return;
+    const hit = document.elementFromPoint(lastPointer.x, lastPointer.y);
+    const plot = hit && hit.closest ? hit.closest('.js-plotly-plot') : null;
+    if (!hit || !plot) {
+      hideHoverCard();
+      return;
+    }
+    hit.dispatchEvent(new MouseEvent('mousemove', {
+      bubbles: true,
+      clientX: lastPointer.x,
+      clientY: lastPointer.y
+    }));
+  }
+
   function resizeVisiblePlots(scope) {
     if (!window.Plotly) return;
     const root = scope || document;
-    const plots = root.querySelectorAll('.js-plotly-plot');
-    plots.forEach(function(gd) {
+    const pending = [];
+    root.querySelectorAll('.js-plotly-plot').forEach(function(gd) {
       try {
-        window.Plotly.Plots.resize(gd);
+        const result = window.Plotly.Plots.resize(gd);
+        if (result && typeof result.then === 'function') pending.push(result);
       } catch (e) {}
+    });
+    Promise.all(pending).then(function() {
+      requestAnimationFrame(refreshHoverAtPointer);
     });
   }
 
@@ -3059,14 +3280,14 @@ _LIVE_SCRIPT = """
       extraColorIdx++;
       const newTraceIdx = gd.data.length;
 
-      await window.Plotly.addTraces(gd, {
+        await window.Plotly.addTraces(gd, {
         x: data.x,
         y: data.y,
         name: data.trace_name,
         meta: data.label,
         mode: 'lines',
         line: { color: color, width: 2.5, shape: 'linear', dash: 'solid' },
-        hovertemplate: '<b>%{meta}</b>: <b>%{y:+.2f}%</b><extra></extra>',
+        hoverinfo: 'none',
         visible: true
       });
 
@@ -3118,7 +3339,7 @@ _LIVE_SCRIPT = """
       }
     });
 
-    // Modern custom floating hover readout for multi-series time-series charts
+    // One custom hover card. Native Plotly hover labels stay at a zero box.
     const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     function formatHoverDate(rawX) {
       const d = new Date(rawX);
@@ -3130,7 +3351,9 @@ _LIVE_SCRIPT = """
     function cleanSeriesName(trace) {
       if (trace && typeof trace.meta === 'string' && trace.meta.trim()) return trace.meta.trim();
       const raw = String((trace && trace.name) || 'Series');
-      return raw.replace(/\\s*\\([+-]?[\\d,.]+%\\)\\s*$/, '').trim() || raw;
+      const cut = raw.lastIndexOf(' (');
+      if (cut > 0 && raw.endsWith(')')) return raw.slice(0, cut).trim();
+      return raw.trim() || raw;
     }
 
     function positionHoverCard(card, clientX, clientY) {
@@ -3147,99 +3370,312 @@ _LIVE_SCRIPT = """
       card.style.top = Math.round(top) + 'px';
     }
 
-    function bindModernTimeSeriesHover(plotId, mode) {
-      const gd = document.getElementById(plotId);
-      const card = document.getElementById('chart-hover-card');
-      if (!gd || !card || typeof gd.on !== 'function' || gd.dataset.modernHoverBound === '1') return;
-      gd.dataset.modernHoverBound = '1';
-
-      const chartBox = gd.closest('.chart') || gd;
-      chartBox.addEventListener('mousemove', function(ev) {
-        lastPointer = { x: ev.clientX, y: ev.clientY };
-        if (!card.hidden && card.dataset.ownerPlot === plotId) {
-          positionHoverCard(card, ev.clientX, ev.clientY);
-        }
-      }, { passive: true });
-      chartBox.addEventListener('mouseleave', function() {
-        if (card.dataset.ownerPlot === plotId) hideHoverCard();
-      });
-
-      gd.on('plotly_hover', function(ev) {
-        if (!ev || !Array.isArray(ev.points) || !ev.points.length) return;
-        const pts = ev.points.filter(function(p) {
-          return p && p.y != null && !Number.isNaN(Number(p.y)) && p.data && p.data.hoverinfo !== 'skip';
-        });
-        if (!pts.length) return;
-
-        const dateLabel = formatHoverDate(pts[0].x);
-        const currUpper = CURRENCY.toUpperCase();
-        const items = pts.map(function(p) {
-          const trace = p.data || {};
-          const name = cleanSeriesName(trace);
-          const color = (trace.line && trace.line.color) || '#60a5fa';
-          const yNum = Number(p.y);
-          const isPortfolio = name === 'Your portfolio' || name === 'Portfolio NAV';
-          let valText = '';
-          let toneCls = '';
-          if (mode === 'pct') {
-            valText = (yNum >= 0 ? '+' : '') + yNum.toFixed(2) + '%';
-            toneCls = yNum > 0 ? ' is-pos' : (yNum < 0 ? ' is-neg' : '');
-          } else {
-            valText = fmtNum(yNum, 2) + ' ' + currUpper;
-            if (name === 'Portfolio NAV' && pts.length > 1) {
-              const depPt = pts.find(function(o) { return cleanSeriesName(o.data) === 'Net contributions'; });
-              if (depPt && Number.isFinite(Number(depPt.y))) {
-                toneCls = yNum >= Number(depPt.y) ? ' is-pos' : ' is-neg';
-              }
-            }
-          }
-          return { name: name, color: color, y: yNum, valText: valText, toneCls: toneCls, isPortfolio: isPortfolio };
-        });
-
-        items.sort(function(a, b) { return b.y - a.y; });
-
-        const badgeTxt = mode === 'pct' ? 'Return (ROI)' : ('Value (' + currUpper + ')');
-        const rowsHtml = items.map(function(it) {
-          return (
-            '<div class="chc-row' + (it.isPortfolio ? ' is-portfolio' : '') + '">' +
-            '<span class="chc-dot" style="background:' + escHtml(it.color) + ';box-shadow:0 0 8px ' + escHtml(it.color) + '"></span>' +
-            '<span class="chc-name">' + escHtml(it.name) + '</span>' +
-            '<span class="chc-val' + it.toneCls + '">' + escHtml(it.valText) + '</span>' +
-            '</div>'
-          );
-        }).join('');
-
-        card.innerHTML = (
-          '<div class="chc-header">' +
-          '<span class="chc-date">' + escHtml(dateLabel) + '</span>' +
-          '<span class="chc-badge">' + escHtml(badgeTxt) + '</span>' +
-          '</div>' +
-          '<div class="chc-rows">' + rowsHtml + '</div>'
-        );
-        card.dataset.ownerPlot = plotId;
-        card.hidden = false;
-
-        let cx = lastPointer.x;
-        let cy = lastPointer.y;
-        if (ev.event && typeof ev.event.clientX === 'number') {
-          cx = ev.event.clientX;
-          cy = ev.event.clientY;
-        } else {
-          const r = gd.getBoundingClientRect();
-          cx = r.left + r.width * 0.55;
-          cy = r.top + r.height * 0.35;
-        }
-        positionHoverCard(card, cx, cy);
-      });
-
-      gd.on('plotly_unhover', function() {
-        if (card.dataset.ownerPlot === plotId) hideHoverCard();
+    function zeroNativeHover(root) {
+      (root || document).querySelectorAll('.hoverlayer .hovertext, .hoverlayer .legend').forEach(function(node) {
+        node.style.setProperty('display', 'none', 'important');
+        node.setAttribute('display', 'none');
       });
     }
 
-    bindModernTimeSeriesHover('chart-benchmark', 'pct');
-    bindModernTimeSeriesHover('chart-nav', 'value');
-    window.addEventListener('scroll', hideHoverCard, { passive: true });
+    function pointMs(value) {
+      if (typeof value === 'number' && Number.isFinite(value)) return value;
+      const parsed = Date.parse(value);
+      return Number.isNaN(parsed) ? null : parsed;
+    }
+
+    function traceShown(trace) {
+      return !!trace && trace.visible !== false && trace.visible !== 'legendonly' && trace.hoverinfo !== 'skip';
+    }
+
+    function seriesValues(value) {
+      if (value == null) return [];
+      if (value._inputArray) return value._inputArray;
+      return value;
+    }
+
+    function seriesColor(trace, idx) {
+      const line = trace.line && trace.line.color;
+      if (typeof line === 'string') return line;
+      const marker = trace.marker || {};
+      const color = marker.color || marker.colors;
+      if (typeof color === 'string') return color;
+      if (Array.isArray(color) && color.length) return color[Math.min(idx, color.length - 1)] || '#38bdf8';
+      return '#38bdf8';
+    }
+
+    function moneyText(y) {
+      return fmtNum(Number(y), 2) + ' ' + String(CURRENCY || '').toUpperCase();
+    }
+
+    function pctParts(y) {
+      const n = Number(y);
+      return {
+        text: (n >= 0 ? '+' : '') + n.toFixed(2) + '%',
+        tone: n > 0 ? ' is-pos' : (n < 0 ? ' is-neg' : '')
+      };
+    }
+
+    function renderHoverCard(card, gd, model, clientX, clientY) {
+      if (!model || !model.rows || !model.rows.length) {
+        hideHoverCard();
+        return;
+      }
+      const rowsHtml = model.rows.map(function(it) {
+        return (
+          '<div class="chc-row' + (it.isPortfolio ? ' is-portfolio' : '') + '">' +
+          '<span class="chc-dot" style="background:' + escHtml(it.color) + ';box-shadow:0 0 8px ' + escHtml(it.color) + '"></span>' +
+          '<span class="chc-name">' + escHtml(it.name) + '</span>' +
+          '<span class="chc-val' + (it.toneCls || '') + '">' + escHtml(it.valText) + '</span>' +
+          '</div>'
+        );
+      }).join('');
+      card.innerHTML = (
+        '<div class="chc-header">' +
+        '<span class="chc-date">' + escHtml(model.header) + '</span>' +
+        '<span class="chc-badge">' + escHtml(model.badge) + '</span>' +
+        '</div><div class="chc-rows">' + rowsHtml + '</div>'
+      );
+      card.dataset.ownerPlot = gd.id || '';
+      card.hidden = false;
+      card.setAttribute('aria-hidden', 'false');
+      positionHoverCard(card, clientX, clientY);
+    }
+
+    function dragRect(gd) {
+      const drag = gd.querySelector('.nsewdrag');
+      if (!drag) return null;
+      const rect = drag.getBoundingClientRect();
+      if (rect.width < 2 || rect.height < 2) return null;
+      return rect;
+    }
+
+    function pointerInside(rect, x, y) {
+      return x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom;
+    }
+
+    function nearestIndex(xs, mouseMs) {
+      let best = 0;
+      let bestDist = Infinity;
+      for (let i = 0; i < xs.length; i++) {
+        const ms = pointMs(xs[i]);
+        if (ms == null) continue;
+        const dist = Math.abs(ms - mouseMs);
+        if (dist < bestDist) {
+          bestDist = dist;
+          best = i;
+        }
+      }
+      return { index: best, dist: bestDist };
+    }
+
+    function labelIndex(labels, label) {
+      const wanted = String(label);
+      for (let i = 0; i < labels.length; i++) {
+        if (String(labels[i]) === wanted) return i;
+      }
+      return -1;
+    }
+
+    function readTimeHover(gd, kind, clientX, clientY) {
+      const rect = dragRect(gd);
+      const plot = gd.getBoundingClientRect();
+      const axis = gd._fullLayout && gd._fullLayout.xaxis;
+      if (!rect || !axis || !pointerInside(rect, clientX, clientY)) return null;
+      const mouseMs = pointMs(axis.p2d(clientX - plot.left));
+      const traces = (gd.data || []).filter(traceShown);
+      if (mouseMs == null || !traces.length) return null;
+      const rows = [];
+      traces.forEach(function(trace) {
+        const found = nearestIndex(seriesValues(trace.x), mouseMs);
+        if (!Number.isFinite(found.dist) || found.dist > 45 * 86400000) return;
+        const ys = seriesValues(trace.y);
+        const y = ys[found.index];
+        if (y == null || Number.isNaN(Number(y))) return;
+        const name = cleanSeriesName(trace);
+        const formatted = kind === 'pct-time' ? pctParts(y) : { text: moneyText(y), tone: '' };
+        rows.push({
+          name: name,
+          color: seriesColor(trace, found.index),
+          y: Number(y),
+          valText: formatted.text,
+          toneCls: formatted.tone,
+          isPortfolio: name === 'Your portfolio' || name === 'Portfolio NAV'
+        });
+      });
+      if (kind === 'money-time') {
+        const nav = rows.find(function(row) { return row.name === 'Portfolio NAV'; });
+        const dep = rows.find(function(row) { return row.name === 'Net contributions'; });
+        if (nav && dep) nav.toneCls = nav.y >= dep.y ? ' is-pos' : ' is-neg';
+      }
+      rows.sort(function(a, b) { return b.y - a.y; });
+      return {
+        header: formatHoverDate(mouseMs),
+        badge: kind === 'pct-time' ? 'Return (ROI)' : ('Value (' + String(CURRENCY || '').toUpperCase() + ')'),
+        rows: rows
+      };
+    }
+
+    function readCategoryHover(gd, clientX, clientY) {
+      const rect = dragRect(gd);
+      const plot = gd.getBoundingClientRect();
+      const axis = gd._fullLayout && gd._fullLayout.xaxis;
+      const trace = (gd.data || []).find(traceShown);
+      if (!rect || !axis || !trace || !pointerInside(rect, clientX, clientY)) return null;
+      const label = String(axis.p2d(clientX - plot.left));
+      const xs = seriesValues(trace.x);
+      const ys = seriesValues(trace.y);
+      let idx = labelIndex(xs, label);
+      if (idx < 0) return null;
+      const y = ys[idx];
+      const customAll = seriesValues(trace.customdata);
+      const custom = customAll[idx];
+      const header = custom && custom[1] ? String(custom[1]) : label;
+      const count = custom && custom[2] != null ? String(custom[2]) : '';
+      return {
+        header: header,
+        badge: count ? (count + ' deposits') : 'Deposited',
+        rows: [{
+          name: 'Deposited',
+          color: seriesColor(trace, idx),
+          y: Number(y),
+          valText: moneyText(y),
+          toneCls: ''
+        }]
+      };
+    }
+
+    function readHBarHover(gd, clientX, clientY) {
+      const rect = dragRect(gd);
+      const plot = gd.getBoundingClientRect();
+      const axis = gd._fullLayout && gd._fullLayout.yaxis;
+      const trace = (gd.data || []).find(traceShown);
+      if (!rect || !axis || !trace || !pointerInside(rect, clientX, clientY)) return null;
+      const label = String(axis.p2d(clientY - plot.top));
+      const xs = seriesValues(trace.x);
+      const ys = seriesValues(trace.y);
+      const idx = labelIndex(ys, label);
+      if (idx < 0) return null;
+      const amount = Number(xs[idx]);
+      const custom = seriesValues(trace.customdata)[idx];
+      if (gd.getAttribute('data-hover-kind') === 'pct-hbar') {
+        const pln = Number(custom);
+        return {
+          header: label,
+          badge: 'Allocation',
+          rows: [{
+            name: label,
+            color: seriesColor(trace, idx),
+            y: amount,
+            valText: amount.toFixed(1) + '%' + (Number.isFinite(pln) ? ' · ' + fmtNum(pln, 0) + ' PLN' : ''),
+            toneCls: ''
+          }]
+        };
+      }
+      const extra = custom && custom[2] ? ' · ' + custom[2] : '';
+      return {
+        header: label,
+        badge: custom && custom[0] ? String(custom[0]) : 'P&L',
+        rows: [{
+          name: label,
+          color: seriesColor(trace, idx),
+          y: amount,
+          valText: (amount >= 0 ? '+' : '') + moneyText(amount) + extra,
+          toneCls: amount > 0 ? ' is-pos' : (amount < 0 ? ' is-neg' : '')
+        }]
+      };
+    }
+
+    function readHeatHover(gd, clientX, clientY) {
+      const rect = dragRect(gd);
+      const plot = gd.getBoundingClientRect();
+      const layout = gd._fullLayout;
+      const trace = (gd.data || []).find(traceShown);
+      if (!rect || !layout || !trace || !pointerInside(rect, clientX, clientY)) return null;
+      const xLabel = String(layout.xaxis.p2d(clientX - plot.left));
+      const yLabel = String(layout.yaxis.p2d(clientY - plot.top));
+      const xs = seriesValues(trace.x);
+      const ys = seriesValues(trace.y);
+      const grid = seriesValues(trace.z);
+      const col = labelIndex(xs, xLabel);
+      const row = labelIndex(ys, yLabel);
+      if (col < 0 || row < 0 || grid[row] == null) return null;
+      const z = seriesValues(grid[row])[col];
+      if (z == null || Number.isNaN(Number(z))) return null;
+      const parts = pctParts(z);
+      return {
+        header: yLabel + ' ' + xLabel,
+        badge: 'Monthly TWR',
+        rows: [{
+          name: 'Return',
+          color: Number(z) >= 0 ? '#34d399' : '#f87171',
+          y: Number(z),
+          valText: parts.text,
+          toneCls: parts.tone
+        }]
+      };
+    }
+
+    function readPieHover(gd, clientX, clientY) {
+      const hit = document.elementFromPoint(clientX, clientY);
+      const slice = hit && hit.closest ? hit.closest('.slice') : null;
+      const datum = slice && slice.__data__;
+      if (!datum || !gd.contains(slice)) return null;
+      const trace = (gd.data || [])[datum.curveNumber || 0] || (gd.data || [])[0];
+      if (!trace) return null;
+      const idx = datum.pointNumber != null ? datum.pointNumber : (datum.i || 0);
+      const total = Number(datum.vTotal || 0);
+      const value = Number(datum.v);
+      const pct = total ? (100 * value / total) : null;
+      return {
+        header: String(datum.label || 'Slice'),
+        badge: 'Allocation',
+        rows: [{
+          name: String(datum.label || 'Slice'),
+          color: seriesColor(trace, idx),
+          y: value,
+          valText: fmtNum(value, 0) + ' PLN' + (pct == null ? '' : ' · ' + pct.toFixed(1) + '%'),
+          toneCls: ''
+        }]
+      };
+    }
+
+    function readHoverModel(gd, clientX, clientY) {
+      const kind = gd.getAttribute('data-hover-kind') || 'auto';
+      if (kind === 'money-time' || kind === 'pct-time') return readTimeHover(gd, kind, clientX, clientY);
+      if (kind === 'money-category') return readCategoryHover(gd, clientX, clientY);
+      if (kind === 'money-hbar' || kind === 'pct-hbar') return readHBarHover(gd, clientX, clientY);
+      if (kind === 'heatmap-pct') return readHeatHover(gd, clientX, clientY);
+      if (kind === 'pie') return readPieHover(gd, clientX, clientY);
+      const trace = (gd.data || [])[0];
+      if (trace && trace.type === 'pie') return readPieHover(gd, clientX, clientY);
+      return readTimeHover(gd, 'money-time', clientX, clientY);
+    }
+
+    function bindCustomHover(gd) {
+      const card = document.getElementById('chart-hover-card');
+      if (!gd || !card || gd.dataset.customHoverBound === '1') return;
+      gd.dataset.customHoverBound = '1';
+      zeroNativeHover(gd);
+      const guard = new MutationObserver(function() { zeroNativeHover(gd); });
+      guard.observe(gd, { childList: true, subtree: true });
+      const chartBox = gd.closest('.chart') || gd;
+      chartBox.addEventListener('mousemove', function(ev) {
+        if (ev.target.closest && ev.target.closest('.chart-controls, button, a, input, select')) {
+          if (card.dataset.ownerPlot === gd.id) hideHoverCard();
+          return;
+        }
+        lastPointer = { x: ev.clientX, y: ev.clientY };
+        renderHoverCard(card, gd, readHoverModel(gd, ev.clientX, ev.clientY), ev.clientX, ev.clientY);
+      }, { passive: true });
+      chartBox.addEventListener('mouseleave', function() {
+        const hit = document.elementFromPoint(lastPointer.x, lastPointer.y);
+        if (hit && chartBox.contains(hit)) return;
+        if (card.dataset.ownerPlot === gd.id) hideHoverCard();
+      });
+    }
+
+    document.querySelectorAll('.js-plotly-plot').forEach(bindCustomHover);
+    window.addEventListener('scroll', refreshHoverAtPointer, { passive: true });
     document.querySelectorAll('.chart-controls').forEach(function(controls) {
       controls.addEventListener('click', async function(event) {
         const button = event.target.closest('button');
@@ -3340,7 +3776,7 @@ _LIVE_SCRIPT = """
         return;
       }
       const rect = anchorBtn.getBoundingClientRect();
-      const popWidth = Math.min(440, window.innerWidth - 28);
+      const popWidth = Math.min(360, window.innerWidth - 28);
       popover.style.width = popWidth + 'px';
       const popHeight = popover.offsetHeight || 280;
       let left = rect.left + rect.width / 2 - popWidth / 2;
@@ -3377,35 +3813,11 @@ _LIVE_SCRIPT = """
       btn.setAttribute('aria-expanded', 'true');
 
       document.getElementById('metric-popover-title').textContent = def.title || '';
-      const formulaEl = document.getElementById('metric-popover-formula');
-      if (formulaEl) {
-        formulaEl.innerHTML = def.formula_html || escHtml(def.formula || '');
-        formulaEl.setAttribute('aria-label', def.formula || '');
-      }
-      document.getElementById('metric-popover-explanation').textContent = def.explanation || '';
-      document.getElementById('metric-popover-example').textContent = def.example || '';
-
-      const rangesWrap = document.getElementById('metric-popover-ranges-wrap');
-      const rangesList = document.getElementById('metric-popover-ranges');
-      const ranges = Array.isArray(def.ranges) ? def.ranges : [];
-      if (rangesWrap && rangesList) {
-        if (ranges.length === 0) {
-          rangesWrap.style.display = 'none';
-          rangesList.innerHTML = '';
-        } else {
-          rangesWrap.style.display = '';
-          rangesList.innerHTML = ranges.map(function(r) {
-            const tone = r.tone === 'pos' || r.tone === 'neg' ? r.tone : 'neutral';
-            return (
-              '<div class="metric-range-item metric-range-' + tone + '">' +
-              '<span class="metric-range-band">' + escHtml(r.band) + '</span>' +
-              '<span class="metric-range-meaning">' + escHtml(r.meaning) + '</span>' +
-              '</div>'
-            );
-          }).join('');
-        }
-      }
-
+      const summaryEl = document.getElementById('metric-popover-summary');
+      if (summaryEl) summaryEl.textContent = def.summary || def.explanation || '';
+      const valueEl = document.getElementById('metric-popover-value');
+      const cardValue = btn.closest('.stat') && btn.closest('.stat').querySelector('.stat-value');
+      if (valueEl) valueEl.textContent = cardValue ? cardValue.textContent.trim() : '—';
       popover.hidden = false;
       positionPopover(btn);
     }
@@ -3424,6 +3836,121 @@ _LIVE_SCRIPT = """
         prevBtn.focus();
       }
     }
+
+    var guideKey = null;
+    var guideReturnBtn = null;
+
+    function guideOrder() {
+      return (INDICATOR_GUIDES && INDICATOR_GUIDES.order) || Object.keys(METRIC_DEFINITIONS);
+    }
+
+    function guideRecord(key) {
+      const scopes = (INDICATOR_GUIDES && INDICATOR_GUIDES.pit_scopes) || {};
+      const selected = (typeof pitSelectedYear === 'string') ? pitSelectedYear : (INDICATOR_GUIDES && INDICATOR_GUIDES.default_pit_scope);
+      if (selected && scopes[selected] && scopes[selected][key]) return scopes[selected][key];
+      return INDICATOR_GUIDES && INDICATOR_GUIDES.indicators ? INDICATOR_GUIDES.indicators[key] : null;
+    }
+
+    function typesetFormula(tex) {
+      const el = document.getElementById('guide-formula');
+      if (!el) return;
+      el.setAttribute('data-tex', tex || '');
+      el.textContent = '\\\\[' + (tex || '') + '\\\\]';
+      if (window.MathJax && typeof MathJax.typesetPromise === 'function') {
+        if (typeof MathJax.typesetClear === 'function') MathJax.typesetClear([el]);
+        MathJax.typesetPromise([el]).catch(function() {});
+      }
+    }
+
+    function renderGuide(record) {
+      if (!record) return;
+      document.getElementById('guide-title').textContent = record.title || '';
+      document.getElementById('guide-summary').textContent = record.summary || '';
+      document.getElementById('guide-value').textContent = record.display_value || '—';
+      document.getElementById('guide-explanation').textContent = record.explanation || '';
+      document.getElementById('guide-example').textContent = record.example || '';
+      const note = document.getElementById('guide-range-note');
+      if (note) note.textContent = record.range_note || '';
+      const steps = document.getElementById('guide-steps');
+      steps.innerHTML = (record.steps || []).map(function(step) {
+        return '<li class="guide-step' + (step.result ? ' is-result' : '') + '">' +
+          '<div><b>' + escHtml(step.label) + '</b><span>' + escHtml(step.detail || '') + '</span></div>' +
+          '<em>' + escHtml(step.value || '') + '</em></li>';
+      }).join('');
+      const ranges = document.getElementById('guide-ranges');
+      const items = record.ranges || [];
+      if (!items.length) {
+        ranges.innerHTML = '<p class="muted">No reference bands are defined for this indicator. The portfolio value is shown above.</p>';
+      } else {
+        ranges.innerHTML = items.map(function(item) {
+          const tone = item.tone === 'pos' || item.tone === 'neg' ? item.tone : 'neutral';
+          const marker = item.active
+            ? '<span class="metric-range-you">This portfolio · ' + escHtml(record.range_value || record.display_value || '') + '</span>'
+            : '';
+          return '<div class="metric-range-item metric-range-' + tone + (item.active ? ' is-active' : '') + '">' +
+            '<span class="metric-range-band">' + escHtml(item.band) + marker + '</span>' +
+            '<span class="metric-range-meaning">' + escHtml(item.meaning) + '</span></div>';
+        }).join('');
+      }
+      const select = document.getElementById('guide-jump');
+      if (select && record.key) select.value = record.key;
+      typesetFormula(record.formula_tex || '');
+      const page = document.getElementById('indicator-guide');
+      if (page) page.scrollTop = 0;
+    }
+
+    function fillGuideJump() {
+      const select = document.getElementById('guide-jump');
+      if (!select || select.dataset.ready === '1') return;
+      select.dataset.ready = '1';
+      guideOrder().forEach(function(key) {
+        const option = document.createElement('option');
+        option.value = key;
+        const rec = INDICATOR_GUIDES.indicators[key];
+        option.textContent = (rec && rec.title) || key;
+        select.appendChild(option);
+      });
+      select.addEventListener('change', function() {
+        openGuide(select.value, guideReturnBtn);
+      });
+    }
+
+    function openGuide(key, btn) {
+      const record = guideRecord(key);
+      if (!record) return;
+      fillGuideJump();
+      guideKey = key;
+      if (btn) guideReturnBtn = btn;
+      closeMetricPopover(false);
+      closeAboutPopover(false);
+      renderGuide(record);
+      const page = document.getElementById('indicator-guide');
+      page.hidden = false;
+      const back = document.getElementById('guide-back');
+      if (back) back.focus();
+    }
+
+    function closeGuide(restore) {
+      const page = document.getElementById('indicator-guide');
+      if (!page || page.hidden) return;
+      page.hidden = true;
+      if (restore && guideReturnBtn && typeof guideReturnBtn.focus === 'function') guideReturnBtn.focus();
+    }
+
+    function stepGuide(delta) {
+      const order = guideOrder();
+      if (!order.length) return;
+      const idx = order.indexOf(guideKey);
+      const next = order[(idx + delta + order.length) % order.length];
+      openGuide(next, guideReturnBtn);
+    }
+
+    const guideBack = document.getElementById('guide-back');
+    const guidePrev = document.getElementById('guide-prev');
+    const guideNext = document.getElementById('guide-next');
+    if (guideBack) guideBack.addEventListener('click', function() { closeGuide(true); });
+    if (guidePrev) guidePrev.addEventListener('click', function() { stepGuide(-1); });
+    if (guideNext) guideNext.addEventListener('click', function() { stepGuide(1); });
 
     function scheduleHoverClose() {
       if (pinnedMetricBtn) return;
@@ -3512,6 +4039,14 @@ _LIVE_SCRIPT = """
     }
 
     document.addEventListener('click', function(e) {
+      if (e.target.closest('#metric-popover-learn')) {
+        e.preventDefault();
+        e.stopPropagation();
+        const source = pinnedMetricBtn || activeMetricBtn;
+        const key = source && source.getAttribute('data-metric-key');
+        openGuide(key, source);
+        return;
+      }
       const btn = e.target.closest('.metric-info-btn');
       if (btn) {
         e.preventDefault();
@@ -3540,7 +4075,11 @@ _LIVE_SCRIPT = """
 
     document.addEventListener('keydown', function(e) {
       if (e.key === 'Escape') {
-        if (popover && !popover.hidden) {
+        const guidePage = document.getElementById('indicator-guide');
+        if (guidePage && !guidePage.hidden) {
+          e.preventDefault();
+          closeGuide(true);
+        } else if (popover && !popover.hidden) {
           e.preventDefault();
           closeMetricPopover(true);
         } else if (aboutPopover && !aboutPopover.hidden) {
@@ -4188,6 +4727,8 @@ _LIVE_SCRIPT = """
       btn.addEventListener('click', function() {
         pitSelectedYear = btn.getAttribute('data-pit-year') || 'all';
         renderPit38State();
+        const guidePage = document.getElementById('indicator-guide');
+        if (guideKey && guidePage && !guidePage.hidden) renderGuide(guideRecord(guideKey));
       });
     });
 
@@ -4567,7 +5108,14 @@ def render_html_report(data: ReportData) -> str:
         _LIVE_SCRIPT.replace("__CURRENCY_JSON__", json.dumps(data.currency))
         .replace("__DEMO_JSON__", json.dumps(data.is_demo))
         .replace("__CUSTOM_BENCHMARKS_JSON__", json.dumps(data.custom_benchmarks))
-        .replace("__METRIC_DEFINITIONS_JSON__", json.dumps(definitions_json_map()))
+        .replace(
+            "__METRIC_DEFINITIONS_JSON__",
+            json.dumps(definitions_json_map()).replace("<", "\\u003c"),
+        )
+        .replace(
+            "__INDICATOR_GUIDES_JSON__",
+            json.dumps(build_indicator_guides(data)).replace("<", "\\u003c"),
+        )
         .replace("__DEPOSITS_JSON__", json.dumps(_deposits_payload(data)))
         .replace("__PIT38_JSON__", json.dumps(_ensure_pit38(data).to_payload()))
     )
@@ -4585,6 +5133,22 @@ def render_html_report(data: ReportData) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>XTB Portfolio Report – {data.measures.as_of}</title>
 <script>{_plotly_bundle()}</script>
+<script>
+window.MathJax = {{
+  options: {{
+    enableMenu: false,
+    enableExplorer: false
+  }},
+  tex: {{
+    inlineMath: [['\\\\(', '\\\\)']],
+    displayMath: [['\\\\[', '\\\\]']],
+    packages: {{'[+]': ['ams', 'textmacros']}}
+  }},
+  svg: {{fontCache: 'local'}},
+  startup: {{typeset: false}}
+}};
+</script>
+<script>{_mathjax_bundle()}</script>
 <style>{_CSS}{_DESIGN_CSS}</style>
 </head>
 <body>

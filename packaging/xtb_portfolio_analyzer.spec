@@ -16,6 +16,8 @@ ASSETS = SRC / "xtb_analyzer" / "assets"
 datas = [
     (str(ASSETS / "app.ico"), "xtb_analyzer/assets"),
     (str(ASSETS / "app.png"), "xtb_analyzer/assets"),
+    (str(ASSETS / "app.icns"), "xtb_analyzer/assets"),
+    (str(ASSETS / "mathjax" / "tex-svg.js"), "xtb_analyzer/assets/mathjax"),
 ]
 # Explicitly bundle only the fictional demo, never the private data/ directory.
 datas += [
@@ -125,6 +127,8 @@ if sys.platform == "win32":
     app_icon = str(ASSETS / "app.ico") if (ASSETS / "app.ico").is_file() else None
 elif sys.platform == "darwin":
     icns_file = ROOT / "build" / "app.icns"
+    if not icns_file.is_file():
+        icns_file = ASSETS / "app.icns"
     app_icon = str(icns_file) if icns_file.is_file() else None
 else:
     app_icon = None

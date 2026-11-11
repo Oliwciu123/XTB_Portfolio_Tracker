@@ -54,7 +54,12 @@ def _build_macos_icns() -> None:
             )
         subprocess.run(["iconutil", "-c", "icns", str(iconset), "-o", str(icns)], check=True)
     except Exception:
-        icns.unlink(missing_ok=True)
+        committed = ROOT / "src" / "xtb_analyzer" / "assets" / "app.icns"
+        if committed.is_file():
+            icns.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(committed, icns)
+        else:
+            icns.unlink(missing_ok=True)
 
 
 def _write_sha256(archive: Path) -> None:

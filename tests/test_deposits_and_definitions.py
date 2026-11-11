@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
@@ -164,6 +165,8 @@ def test_metric_definitions_catalog_complete_and_valid():
         assert item["title"], f"Missing title for {key}"
         assert item["formula"], f"Missing formula for {key}"
         assert "m-expr" in str(item["formula_html"]), f"Missing typeset formula_html for {key}"
+        assert item["formula_tex"], f"Missing formula_tex for {key}"
+        assert len(str(item["summary"])) >= 20, f"Summary too short for {key}"
         assert len(str(item["explanation"])) >= 40, f"Explanation too short for {key}"
         assert any(ch.isdigit() for ch in str(item["example"])), f"Example lacks numbers for {key}"
         for rng in item["ranges"]:  # type: ignore[union-attr]
@@ -227,8 +230,13 @@ def test_rendered_report_includes_deposits_definitions_and_pit38_sections(tmp_pa
     assert "id='pit38-fifo-table'" in html
     assert "id='pit38-div-table'" in html
     assert "__METRIC_DEFINITIONS_JSON__" not in html
+    assert "__INDICATOR_GUIDES_JSON__" not in html
     assert "__DEPOSITS_JSON__" not in html
     assert "__PIT38_JSON__" not in html
+    assert "id='indicator-guide'" in html
+    assert "XTB Portfolio Tracker v1.3.0" in html
+    assert not re.search(r"""<script[^>]+src=['"]https?:""", html)
+    assert not re.search(r"""<link[^>]+href=['"]https?:""", html)
 
 
 def test_playwright_interactive_deposits_definitions_and_pit38(tmp_path: Path):
@@ -268,18 +276,101 @@ def test_playwright_interactive_deposits_definitions_and_pit38(tmp_path: Path):
             "() => document.getElementById('chart-nav')._context.scrollZoom === false"
         )
 
-        # 1. Interactive Metric Definitions: typeset math formula (.m-frac, .m-sqrt)
+        # 1. Short indicator popover, then the in-report MathJax guide.
         sharpe_btn = page.locator('[data-metric-key="sharpe"]').first
         sharpe_btn.click()
         popover = page.locator("#metric-popover")
         assert popover.is_visible()
-        assert page.locator("#metric-popover-formula .m-frac").count() >= 1
-        assert page.locator("#metric-popover-formula .m-sqrt").count() >= 1
+        assert page.locator("#metric-popover-formula").count() == 0
         assert "Sharpe Ratio" in popover.inner_text()
-        assert "1.25" in popover.inner_text()
-        assert "1.0 – 2.0" in popover.inner_text()
+        assert "Learn more" in popover.inner_text()
+        assert "1.25" not in popover.inner_text()
+        dashboard_sharpe = (
+            sharpe_btn.locator("xpath=ancestor::div[contains(@class, 'stat ')][1]")
+            .locator(".stat-value")
+            .inner_text()
+            .strip()
+        )
+        assert dashboard_sharpe in popover.inner_text()
+        page.locator("#metric-popover-learn").click()
+        guide = page.locator("#indicator-guide")
+        assert guide.is_visible()
+        page.wait_for_function("() => document.querySelector('#guide-formula svg path')")
+        assert "1.25" in guide.inner_text()
+        assert "1.0 – 2.0" in guide.inner_text()
+        assert dashboard_sharpe in page.locator("#guide-value").inner_text()
+        assert dashboard_sharpe in page.locator("#guide-steps .is-result").inner_text()
+        formula_ok = page.evaluate(
+            """() => {
+                const host = document.getElementById('guide-formula');
+                const svg = host.querySelector('svg');
+                const glyphs = [...svg.querySelectorAll('use')].filter(node => node.getBoundingClientRect().width > 0);
+                const svgBox = svg.getBoundingClientRect();
+                const clipped = glyphs.some(node => {
+                    const box = node.getBoundingClientRect();
+                    return box.top < svgBox.top - 2 || box.bottom > svgBox.bottom + 2;
+                });
+                return {glyphs: glyphs.length, svgH: svgBox.height, hostH: host.getBoundingClientRect().height, clipped};
+            }"""
+        )
+        assert formula_ok["glyphs"] >= 8
+        assert formula_ok["svgH"] > 24
+        assert formula_ok["hostH"] + 1 >= formula_ok["svgH"]
+        assert not formula_ok["clipped"]
+        page.locator("#guide-next").click()
+        assert page.locator("#guide-title").inner_text() != "Sharpe Ratio"
+        page.locator("#guide-prev").click()
+        assert "Sharpe" in page.locator("#guide-title").inner_text()
         page.keyboard.press("Escape")
-        assert popover.is_hidden()
+        assert guide.is_hidden()
+
+        def assert_single_hover(plot_id: str, section: str) -> None:
+            page.locator(f'[data-target="{section}"]').click()
+            page.wait_for_timeout(250)
+            page.locator(f"#{plot_id}").scroll_into_view_if_needed()
+            drag = page.locator(f"#{plot_id} .nsewdrag")
+            box = drag.bounding_box() if drag.count() else None
+            if box is None:
+                slice_box = page.locator(f"#{plot_id} .slice").first.bounding_box()
+                assert slice_box is not None, plot_id
+                page.mouse.move(
+                    slice_box["x"] + slice_box["width"] * 0.5,
+                    slice_box["y"] + slice_box["height"] * 0.5,
+                )
+            else:
+                page.mouse.move(box["x"] + box["width"] * 0.55, box["y"] + box["height"] * 0.45)
+            try:
+                page.wait_for_function(
+                    """() => {
+                        const card = document.getElementById('chart-hover-card');
+                        return card && !card.hidden && card.querySelector('.chc-val');
+                    }""",
+                    timeout=8000,
+                )
+            except Exception as exc:
+                raise AssertionError(
+                    f"custom hover card did not stay visible on {plot_id}"
+                ) from exc
+            native = page.evaluate(
+                """() => [...document.querySelectorAll('.hoverlayer .hovertext, .hoverlayer .legend')].filter(node => {
+                    const box = node.getBoundingClientRect();
+                    return box.width > 0.5 || box.height > 0.5;
+                }).length"""
+            )
+            assert native == 0, f"Native Plotly hover label is visible on {plot_id}"
+
+        for plot_id, section in (
+            ("chart-nav", "overview"),
+            ("chart-monthly", "overview"),
+            ("chart-deposits", "deposits"),
+            ("chart-benchmark", "benchmarks"),
+            ("chart-pnl", "holdings"),
+            ("chart-holdings", "holdings"),
+            ("chart-currency", "holdings"),
+            ("chart-sector", "holdings"),
+        ):
+            assert_single_hover(plot_id, section)
+        page.mouse.move(2, 2)
 
         # 2. Deposit Analytics: collapsible preview (10 of 72 initially), no Operation details col
         page.locator('[data-target="deposits"]').click()

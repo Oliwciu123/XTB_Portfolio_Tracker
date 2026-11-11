@@ -1,6 +1,6 @@
 """XTB portfolio analyzer."""
 
-__version__ = "1.2.0"
+__version__ = "1.3.0"
 
 from xtb_analyzer.attribution import FxAttribution, compute_fx_attribution
 from xtb_analyzer.benchmark import (

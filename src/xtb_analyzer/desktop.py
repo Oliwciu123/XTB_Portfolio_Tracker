@@ -94,7 +94,7 @@ _DESKTOP_START_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>XTB Portfolio Analyzer</title>
+<title>XTB Portfolio Tracker</title>
 <style>
   * { box-sizing: border-box; }
   html, body {
@@ -236,7 +236,7 @@ _DESKTOP_START_HTML = """<!DOCTYPE html>
 <body>
   <div class="start-screen">
     <div class="upload-card">
-      <h1 class="upload-title">XTB Portfolio Analyzer</h1>
+      <h1 class="upload-title">XTB Portfolio Tracker</h1>
       <p class="upload-subtitle">Import your account history as a ZIP file to generate a report.</p>
 
       <input id="file-input" type="file" accept=".zip" style="display:none">
@@ -662,7 +662,7 @@ def open_desktop_app(
 
     bridge = _LiveReportBridge(None, currency=currency)
     window = webview.create_window(
-        "XTB Portfolio Analyzer",
+        "XTB Portfolio Tracker",
         url=start_file.resolve().as_uri(),
         width=width,
         height=height,
@@ -692,7 +692,7 @@ class AnalyzerApp:
         if root is None:
             root = self._make_root()
         self.root = root
-        self.root.title("XTB Portfolio Analyzer")
+        self.root.title("XTB Portfolio Tracker")
         self.root.configure(bg=BG)
         self.root.geometry("680x460")
         self.root.minsize(560, 410)
@@ -755,7 +755,7 @@ class AnalyzerApp:
 
         tk.Label(
             outer,
-            text="XTB Portfolio Analyzer",
+            text="XTB Portfolio Tracker",
             bg=BG,
             fg=FG,
             font=("Segoe UI", 22, "bold"),

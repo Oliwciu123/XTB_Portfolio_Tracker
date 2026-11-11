@@ -1,6 +1,6 @@
 # Contributor instructions
 
-This is one Python CLI/library and desktop product, **XTB Portfolio Analyzer**.
+This is one Python CLI/library and desktop product, **XTB Portfolio Tracker**.
 It parses XTB exports and writes interactive HTML. There is no server or database.
 
 - Work on `main` for this repository; do not delete other branches without approval.

@@ -102,7 +102,7 @@ def test_window_has_progress_and_no_offline_switch(tmp_path: Path, monkeypatch):
     blob = " ".join(texts)
     assert "USD/EUR" not in blob
     assert "XTB PORTFOLIO ANALYZER" not in blob
-    assert "XTB Portfolio Analyzer" in blob
+    assert "XTB Portfolio Tracker" in blob
     assert "Import your account history as a ZIP file to generate a report." in blob
     assert "Drop your history ZIP here" in blob
     assert app.progress is not None

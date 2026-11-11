@@ -21,6 +21,9 @@ class BenchmarkRelation:
     alpha_annual: float | None
     correlation: float | None
     benchmark_return: float | None
+    mean_portfolio: float | None = None
+    mean_benchmark: float | None = None
+    observations: int | None = None
 
 
 @dataclass
@@ -119,9 +122,20 @@ def _benchmark_relation(
     if cov[1, 1] == 0:
         return BenchmarkRelation(name, None, None, None, benchmark_return)
     beta = float(cov[0, 1] / cov[1, 1])
-    alpha = float((joined.iloc[:, 0].mean() - beta * joined.iloc[:, 1].mean()) * TRADING_DAYS)
+    mean_portfolio = float(joined.iloc[:, 0].mean())
+    mean_benchmark = float(joined.iloc[:, 1].mean())
+    alpha = float((mean_portfolio - beta * mean_benchmark) * TRADING_DAYS)
     correlation = float(joined.iloc[:, 0].corr(joined.iloc[:, 1]))
-    return BenchmarkRelation(name, beta, alpha, correlation, benchmark_return)
+    return BenchmarkRelation(
+        name,
+        beta,
+        alpha,
+        correlation,
+        benchmark_return,
+        mean_portfolio=mean_portfolio,
+        mean_benchmark=mean_benchmark,
+        observations=int(len(joined)),
+    )
 
 
 def compute_risk_stats(

@@ -44,14 +44,17 @@ PNG export. Mouse-wheel scrolling scrolls the page by default; click inside any
 chart to enable wheel zoom, and click outside or press `Escape` to exit zoom mode.
 Long tables (FIFO lot matching, dividends, deposit operations and company results)
 show a concise preview with an expand/collapse toggle and row count while search,
-filters and CSV exports always cover every row. Report metadata, data-source notes
-and the non-advice disclaimer live in the header **About** popover.
+filters and CSV exports always cover every row. Chart hover uses one readout card.
+Each indicator button gives a short summary; **Learn more** opens that indicator's
+guide in the same report, with the formula and a calculation from this portfolio.
+Report metadata, data-source notes and the non-advice disclaimer live in the
+header **About** popover.
 
 ## Share a Windows desktop build
 
 On Windows, install uv, then run `build_windows.bat`. It builds a PyInstaller
 application, writes `dist/XTBPortfolioAnalyzer-Windows.zip` with a SHA-256 checksum,
-and creates or refreshes an **XTB Portfolio Analyzer** shortcut (with the app icon)
+and creates or refreshes an **XTB Portfolio Tracker** shortcut (with the app icon)
 on your Windows Desktop pointing at `dist\XTBPortfolioAnalyzer\XTBPortfolioAnalyzer.exe`.
 You can also create or refresh the Desktop shortcut on its own from the repository root:
 

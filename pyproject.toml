@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xtb-analyzer"
-version = "1.2.0"
+version = "1.3.0"
 description = "Desktop ZIP importer and interactive XTB portfolio analysis"
 license = "MIT"
 readme = "README.md"
@@ -37,7 +37,7 @@ xtb-analyzer-desktop = "xtb_analyzer.desktop:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-xtb_analyzer = ["assets/*"]
+xtb_analyzer = ["assets/*", "assets/mathjax/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

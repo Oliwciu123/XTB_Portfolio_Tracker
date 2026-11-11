@@ -748,6 +748,126 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
 }
 
 
+FORMULA_TEX: dict[str, str] = {
+    "nav": (
+        r"\mathrm{NAV}=\mathrm{Cash}+\sum_{i=1}^{M}"
+        r"\left(\mathrm{Shares}_{i}\cdot\mathrm{Price}_{i}\cdot\mathrm{FX}_{i}\right)"
+    ),
+    "contributions": (
+        r"\mathrm{Contributions}_{\mathrm{gross}}"
+        r"=\sum_{k\in\mathrm{inbound}}\mathrm{Deposit}_{k}"
+    ),
+    "profit_loss": (
+        r"\mathrm{P\&L}=\mathrm{NAV}+\mathrm{Withdrawals}"
+        r"-\mathrm{Contributions}_{\mathrm{gross}}"
+    ),
+    "roi": (
+        r"\mathrm{ROI}=\frac{\mathrm{NAV}+\mathrm{Withdrawals}"
+        r"-\mathrm{Contributions}_{\mathrm{gross}}}{\mathrm{Contributions}_{\mathrm{gross}}}"
+    ),
+    "mwr_xirr": (r"\sum_{i=1}^{N}\frac{\mathrm{CF}_{i}}{(1+\mathrm{XIRR})^{d_{i}/365.25}}=0"),
+    "twr": (
+        r"\mathrm{TWR}=\prod_{t=1}^{T}"
+        r"\left(\frac{\mathrm{NAV}_{t}}{\mathrm{NAV}_{t-1}+F_{t}}\right)-1"
+    ),
+    "volatility": (
+        r"\sigma_{\mathrm{ann}}=\sqrt{252}\cdot"
+        r"\sqrt{\frac{1}{N-1}\sum_{t=1}^{N}\left(r_{t}-\bar{r}\right)^{2}}"
+    ),
+    "sharpe": (
+        r"\mathrm{Sharpe}=\sqrt{252}\cdot"
+        r"\frac{\bar{r}_{p}-r_{f}/252}{\sigma_{p}}"
+    ),
+    "sortino": (
+        r"\mathrm{Sortino}=\frac{\sqrt{252}\cdot\bar{r}_{\mathrm{excess}}}"
+        r"{\sqrt{\frac{1}{N}\sum_{t=1}^{N}\min(r_{t,\mathrm{excess}},0)^{2}}}"
+    ),
+    "alpha": (r"\alpha=\left[\bar{r}_{p}-\beta\cdot\bar{r}_{b}\right]\times 252"),
+    "beta": (r"\beta=\frac{\mathrm{Cov}(r_{p},r_{b})}{\mathrm{Var}(r_{b})}"),
+    "max_drawdown": (
+        r"\mathrm{MDD}=\min_{t}"
+        r"\left(\frac{W_{t}-\max_{s\le t}W_{s}}{\max_{s\le t}W_{s}}\right)"
+    ),
+    "calmar": (r"\mathrm{Calmar}=\frac{\mathrm{TWR}_{\mathrm{ann}}}{\left|\mathrm{MDD}\right|}"),
+    "var_95": (r"\mathrm{VaR}_{95\%}=Q_{0.05}(r_{1},r_{2},\ldots,r_{T})"),
+    "win_rate": (r"\mathrm{Win\ Rate}=\frac{N_{\mathrm{wins}}}{N_{\mathrm{closed}}}"),
+    "profit_factor": (
+        r"\mathrm{Profit\ Factor}="
+        r"\frac{\sum_{i\in\mathrm{wins}}G_{i}}"
+        r"{\left|\sum_{j\in\mathrm{losses}}L_{j}\right|}"
+    ),
+    "best_month": (
+        r"\mathrm{Best\ Month}=\max_{m}"
+        r"\left[\prod_{t\in m}(1+r_{t})-1\right]"
+    ),
+    "worst_month": (
+        r"\mathrm{Worst\ Month}=\min_{m}"
+        r"\left[\prod_{t\in m}(1+r_{t})-1\right]"
+    ),
+    "fx_conversion_cost": (
+        r"\mathrm{Fee}_{\mathrm{est}}=0.005\cdot\sum_{k}\mathrm{PLN}_{\mathrm{converted},k}"
+    ),
+    "investment_gain": (r"G_{\mathrm{inv}}=\sum_{c}(V_{c}-D_{c})\cdot\mathrm{FX}_{c}"),
+    "fx_gain": (r"G_{\mathrm{FX}}=\sum_{c}(D_{c}\cdot\mathrm{FX}_{c}-P_{c})"),
+    "pit38_revenue": (
+        r"\mathrm{Revenue}_{\mathrm{PLN}}=\sum_{k}\mathrm{Proceeds}_{k}"
+        r"\cdot\mathrm{NBP}_{D_{\mathrm{sell}}-1}"
+    ),
+    "pit38_costs": (
+        r"\mathrm{Costs}_{\mathrm{PLN}}=\sum_{k}\left(\mathrm{Cost}_{\mathrm{FIFO},k}"
+        r"\cdot\mathrm{NBP}_{D_{\mathrm{buy}}-1}+\mathrm{Comm}_{\mathrm{PLN},k}\right)"
+    ),
+    "pit38_income": (
+        r"\mathrm{Net}_{\mathrm{C}}=\mathrm{Revenue}_{\mathrm{PLN}}-\mathrm{Costs}_{\mathrm{PLN}}"
+    ),
+    "pit38_wht_credit": (
+        r"\mathrm{Credit}_{\mathrm{WHT}}=\sum_{j}\min\left(\mathrm{WHT}_{\mathrm{PLN},j},"
+        r"\,0.19\cdot\mathrm{Div}_{\mathrm{PLN},j}\right)"
+    ),
+    "pit38_total_tax": (
+        r"\mathrm{Tax}_{\mathrm{total}}=0.19\cdot\max(\mathrm{Net}_{\mathrm{C}},0)"
+        r"+\sum_{j}\left(0.19\cdot\mathrm{Div}_{j}-\mathrm{Credit}_{j}\right)"
+    ),
+}
+
+INDICATOR_SUMMARY: dict[str, str] = {
+    "nav": "Cash plus the market value of open holdings, in the report currency.",
+    "contributions": "External cash paid in, ignoring transfers between your own XTB accounts.",
+    "profit_loss": "Change in wealth after every deposit and withdrawal.",
+    "roi": "Total profit as a percentage of all cash you deposited.",
+    "mwr_xirr": "Return that weights each deposit by how long that cash was invested.",
+    "twr": "Investment performance with deposit and withdrawal timing removed.",
+    "volatility": "How widely daily returns move around their average, scaled to a trading year.",
+    "sharpe": "Annualized excess return earned for each unit of total volatility.",
+    "sortino": "Annualized excess return earned for each unit of downside volatility.",
+    "alpha": "Annualized return above or below what this portfolio's beta would predict.",
+    "beta": "How much the portfolio moves when the benchmark moves.",
+    "max_drawdown": "Deepest peak-to-trough decline in the time-weighted wealth index.",
+    "calmar": "Annualized time-weighted return divided by the worst drawdown.",
+    "var_95": "Daily loss threshold breached on only the worst 5% of days.",
+    "win_rate": "Share of closed FIFO lots that were sold at a profit.",
+    "profit_factor": "Realized gross profit for each unit of realized gross loss.",
+    "best_month": "Strongest calendar-month time-weighted return.",
+    "worst_month": "Weakest calendar-month time-weighted return.",
+    "fx_conversion_cost": "Estimated 0.5% cost of converting PLN into foreign currency.",
+    "investment_gain": "PLN profit from prices, dividends, and interest, excluding currency moves.",
+    "fx_gain": "PLN profit or loss from exchange-rate moves on foreign capital.",
+    "pit38_revenue": "PLN sale proceeds for the selected tax year at each sale's prior-day NBP rate.",
+    "pit38_costs": "FIFO purchase cost of the shares sold, plus brokerage commissions, in PLN.",
+    "pit38_income": "Section C revenue minus deductible costs for the selected tax year.",
+    "pit38_wht_credit": "Foreign dividend tax credited against Polish dividend tax, capped at 19%.",
+    "pit38_total_tax": "Estimated Polish tax on equity sales plus the net dividend surcharge.",
+}
+
+
 def definitions_json_map() -> dict[str, dict[str, object]]:
-    """Serialize all metric definitions for offline browser popovers."""
-    return {key: item.to_dict() for key, item in METRIC_DEFINITIONS.items()}
+    """Serialize metric definitions, including offline MathJax source."""
+    payload = {key: item.to_dict() for key, item in METRIC_DEFINITIONS.items()}
+    missing_tex = set(METRIC_DEFINITIONS) - set(FORMULA_TEX)
+    missing_summary = set(METRIC_DEFINITIONS) - set(INDICATOR_SUMMARY)
+    if missing_tex or missing_summary:
+        raise KeyError(f"Indicator copy missing: tex={missing_tex} summary={missing_summary}")
+    for key, item in payload.items():
+        item["formula_tex"] = FORMULA_TEX[key]
+        item["summary"] = INDICATOR_SUMMARY[key]
+    return payload

@@ -2,7 +2,7 @@
 
 ## One-line title
 
-**XTB Portfolio Analyzer — Python portfolio reconstruction and interactive financial reporting**
+**XTB Portfolio Tracker — Python portfolio reconstruction and interactive financial reporting**
 
 ## CV bullets
 
@@ -31,7 +31,7 @@ fictional offline examples, financial regression tests and cross-platform CI con
 
 ## 30-second interview pitch
 
-I built XTB Portfolio Analyzer to turn broker exports into a portfolio history
+I built XTB Portfolio Tracker to turn broker exports into a portfolio history
 that is easier to inspect. The difficult part was distinguishing investment
 results from deposits, withdrawals and currency conversions. I used Python,
 pandas and Decimal for the accounting pipeline, then added XIRR, daily TWR and

@@ -16,8 +16,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_EXE = ROOT / "dist" / "XTBPortfolioAnalyzer" / "XTBPortfolioAnalyzer.exe"
 SOURCE_ICON = ROOT / "src" / "xtb_analyzer" / "assets" / "app.ico"
-SHORTCUT_NAME = "XTB Portfolio Analyzer.lnk"
-DESCRIPTION = "XTB Portfolio Analyzer — Interactive Portfolio & PIT-38 Tracker"
+SHORTCUT_NAME = "XTB Portfolio Tracker.lnk"
+DESCRIPTION = "XTB Portfolio Tracker — Interactive portfolio and PIT-38 report"
 
 
 def _ps_quote(text: str) -> str:
