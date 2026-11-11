@@ -1,8 +1,85 @@
-"""Structured definitions, numerical examples, and reference ranges for portfolio KPIs."""
+"""Structured definitions, offline typeset math formulas, examples, and reference ranges for KPIs."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+
+
+def _frac(num: str, den: str) -> str:
+    return (
+        f"<span class='m-frac'>"
+        f"<span class='m-num'>{num}</span>"
+        f"<span class='m-den'>{den}</span>"
+        f"</span>"
+    )
+
+
+def _sqrt(radicand: str) -> str:
+    return (
+        "<span class='m-sqrt'>"
+        "<svg class='m-sqrt-sym' viewBox='0 0 22 100' preserveAspectRatio='none' aria-hidden='true'>"
+        "<polyline points='1,56 8,96 20,2 22,2' fill='none' stroke='currentColor' "
+        "stroke-width='6' vector-effect='non-scaling-stroke' stroke-linecap='round' stroke-linejoin='round'/>"
+        "</svg>"
+        f"<span class='m-sqrt-body'>{radicand}</span>"
+        "</span>"
+    )
+
+
+def _bigop(glyph: str, sub: str = "", sup: str = "") -> str:
+    sup_html = (
+        f"<span class='m-lim-sup'>{sup}</span>" if sup else "<span class='m-lim-empty'></span>"
+    )
+    sub_html = (
+        f"<span class='m-lim-sub'>{sub}</span>" if sub else "<span class='m-lim-empty'></span>"
+    )
+    return (
+        f"<span class='m-bigop'>{sup_html}<span class='m-op-glyph'>{glyph}</span>{sub_html}</span>"
+    )
+
+
+def _under(op: str, sub: str) -> str:
+    return (
+        f"<span class='m-underop'>"
+        f"<span class='m-op-word'>{op}</span>"
+        f"<span class='m-lim-sub'>{sub}</span>"
+        f"</span>"
+    )
+
+
+def _v(sym: str, sub: str = "", sup: str = "", bar: bool = False) -> str:
+    core = f"<span class='m-bar-over'>{sym}</span>" if bar else sym
+    tail = ""
+    if sub and sup:
+        tail = f"<span class='m-scripts'><sup>{sup}</sup><sub>{sub}</sub></span>"
+    elif sub:
+        tail = f"<sub>{sub}</sub>"
+    elif sup:
+        tail = f"<sup>{sup}</sup>"
+    return f"<span class='m-var'>{core}</span>{tail}"
+
+
+def _t(label: str, sub: str = "", sup: str = "") -> str:
+    tail = ""
+    if sub and sup:
+        tail = f"<span class='m-scripts'><sup>{sup}</sup><sub>{sub}</sub></span>"
+    elif sub:
+        tail = f"<sub>{sub}</sub>"
+    elif sup:
+        tail = f"<sup>{sup}</sup>"
+    return f"<span class='m-rm'>{label}</span>{tail}"
+
+
+def _abs(inner: str) -> str:
+    return f"<span class='m-abs'>{inner}</span>"
+
+
+def _paren(inner: str) -> str:
+    return f"<span class='m-delim'>(</span>{inner}<span class='m-delim'>)</span>"
+
+
+def _eq(lhs: str, rhs: str) -> str:
+    return f"<div class='m-expr' role='math'>{lhs}<span class='m-rel'>=</span>{rhs}</div>"
 
 
 @dataclass(frozen=True)
@@ -17,6 +94,7 @@ class MetricDefinition:
     key: str
     title: str
     formula: str
+    formula_html: str
     explanation: str
     example: str
     ranges: tuple[MetricRange, ...] = ()
@@ -26,6 +104,7 @@ class MetricDefinition:
             "key": self.key,
             "title": self.title,
             "formula": self.formula,
+            "formula_html": self.formula_html,
             "explanation": self.explanation,
             "example": self.example,
             "ranges": [asdict(r) for r in self.ranges],
@@ -36,7 +115,13 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "nav": MetricDefinition(
         key="nav",
         title="Portfolio Net Asset Value (NAV)",
-        formula="NAV = Cash Balances + Σ (Open Shares × Spot Price)",
+        formula="NAV = Cash + sum_i (Shares_i * Price_i * FX_i)",
+        formula_html=_eq(
+            _t("NAV"),
+            f"{_t('Cash')} <span class='m-bin'>+</span> "
+            f"{_bigop('&sum;', 'i=1', 'M')} "
+            f"{_paren(_t('Shares', 'i') + ' &middot; ' + _t('Price', 'i') + ' &middot; ' + _t('FX', 'i'))}",
+        ),
         explanation=(
             "Measures the total liquidation value of all cash and open holdings across your "
             "accounts on the valuation date, translated into the selected report currency."
@@ -57,7 +142,11 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "contributions": MetricDefinition(
         key="contributions",
         title="Gross Contributions",
-        formula="Gross Contributions = Σ Inbound External Deposits",
+        formula="Gross Contributions = sum_{k in inbound} Deposit_k",
+        formula_html=_eq(
+            _t("Contributions", "gross"),
+            f"{_bigop('&sum;', 'k &isin; inbound')} {_t('Deposit', 'k')}",
+        ),
         explanation=(
             "Tracks the total external cash funded into your brokerage accounts from outside "
             "sources. Internal currency transfers between your own XTB sub-accounts are excluded "
@@ -79,7 +168,12 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "profit_loss": MetricDefinition(
         key="profit_loss",
         title="Total Profit / Loss",
-        formula="Profit / Loss = Current NAV + Withdrawals − Gross Contributions",
+        formula="Profit / Loss = NAV + Withdrawals - Gross Contributions",
+        formula_html=_eq(
+            _t("P&amp;L"),
+            f"{_t('NAV')} <span class='m-bin'>+</span> {_t('Withdrawals')} "
+            f"<span class='m-bin'>&minus;</span> {_t('Contributions', 'gross')}",
+        ),
         explanation=(
             "Shows how much total wealth your portfolio has added or lost in monetary terms after "
             "accounting for every deposit and withdrawal, including realized trades, unrealized "
@@ -98,7 +192,15 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "roi": MetricDefinition(
         key="roi",
         title="Return on Contributed Capital (ROI)",
-        formula="ROI = (NAV + Withdrawals − Gross Contributions) / Gross Contributions",
+        formula="ROI = (NAV + Withdrawals - Gross Contributions) / Gross Contributions",
+        formula_html=_eq(
+            _t("ROI"),
+            _frac(
+                f"{_t('NAV')} <span class='m-bin'>+</span> {_t('Withdrawals')} "
+                f"<span class='m-bin'>&minus;</span> {_t('Contributions', 'gross')}",
+                _t("Contributions", "gross"),
+            ),
+        ),
         explanation=(
             "Measures total monetary profit as a percentage of all capital you ever deposited. "
             "Easy to interpret, though it treats money deposited last week the same as money "
@@ -119,16 +221,23 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "mwr_xirr": MetricDefinition(
         key="mwr_xirr",
         title="Money-Weighted Return (MWR / XIRR)",
-        formula="Σ [Cash Flow_i / (1 + XIRR)^(days_i / 365.25)] = 0",
+        formula="sum_{i=1..N} CF_i / (1 + XIRR)^(d_i / 365.25) = 0",
+        formula_html=(
+            "<div class='m-expr' role='math'>"
+            f"{_bigop('&sum;', 'i=1', 'N')} "
+            f"{_frac(_t('CF', 'i'), _paren('1 + ' + _t('XIRR')) + '<sup>' + _v('d', 'i') + ' / 365.25</sup>')}"
+            "<span class='m-rel'>=</span>0"
+            "</div>"
+        ),
         explanation=(
             "Captures your personal return by weighting each deposit and withdrawal by the exact "
             "number of days that money worked in the market. XIRR is the annualized compound rate; "
-            "MWR scales that rate to your actual holding period."
+            "period MWR compounds XIRR over your actual holding horizon."
         ),
         example=(
-            "Investing 10,000 PLN for 2 full years and adding 10,000 PLN one month before ending "
-            "at 22,500 PLN yields ~11.4% annualized XIRR (higher than raw 12.5% / 2 yrs because "
-            "half the capital was only invested for 1 month)."
+            "Investing 10,000 PLN on Jan 1, 2024, adding 10,000 PLN on Dec 1, 2025, and ending at "
+            "22,500 PLN on Jan 1, 2026 yields +11.38% annualized XIRR and +24.08% 2-year MWR "
+            "(versus +12.50% simple ROI, because the second 10,000 PLN worked for only 1 month)."
         ),
         ranges=(
             MetricRange("> 10% annualized", "Outpaces historical nominal equity averages", "pos"),
@@ -143,12 +252,18 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "twr": MetricDefinition(
         key="twr",
         title="Time-Weighted Return (TWR & Annualized CAGR)",
-        formula="TWR = Π [NAV_t / (NAV_{t−1} + Flow_t)] − 1",
+        formula="TWR = prod_{t=1..T} [NAV_t / (NAV_{t-1} + F_t)] - 1",
+        formula_html=_eq(
+            _t("TWR"),
+            f"{_bigop('&prod;', 't=1', 'T')} "
+            f"{_paren(_frac(_t('NAV', 't'), _t('NAV', 't&minus;1') + ' + ' + _v('F', 't')))} "
+            f"<span class='m-bin'>&minus;</span> 1",
+        ),
         explanation=(
             "Measures the pure performance of your investment selections by neutralizing the "
             "timing and size of deposits or withdrawals. Because external cash flows are stripped "
-            "out, TWR (and its annualized CAGR) is the standard metric for comparing against market "
-            "indices like the S&P 500."
+            "out, TWR (and its annualized rate) is the standard metric for comparing against "
+            "market indices like the S&P 500."
         ),
         example=(
             "Your portfolio rises +10% in H1 (from 10,000 to 11,000 PLN), you deposit 39,000 PLN "
@@ -167,15 +282,20 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "volatility": MetricDefinition(
         key="volatility",
         title="Annualized Volatility",
-        formula="Volatility = StdDev(Daily TWR) × √252",
+        formula="sigma_ann = sqrt(252) * sqrt((1 / (N - 1)) * sum_{t=1..N} (r_t - mean(r))^2)",
+        formula_html=_eq(
+            _v("&sigma;", "ann"),
+            f"{_sqrt('252')} &middot; "
+            f"{_sqrt(_frac('1', _v('N') + ' &minus; 1') + ' ' + _bigop('&sum;', 't=1', 'N') + ' ' + _paren(_v('r', 't') + ' &minus; ' + _v('r', bar=True)) + '<sup>2</sup>')}",
+        ),
         explanation=(
             "Quantifies how widely your daily portfolio returns swing around their average, scaled "
             "to one trading year (252 days). Lower volatility means a smoother equity curve; higher "
             "volatility signals wider day-to-day price swings."
         ),
         example=(
-            "If daily time-weighted returns have a standard deviation of 1.15%, annualized "
-            "volatility is 1.15% × √252 ≈ 18.26%."
+            "If daily time-weighted returns have a sample standard deviation of 1.15%, annualized "
+            "volatility is 1.15% × √252 = 18.26%."
         ),
         ranges=(
             MetricRange("< 12%", "Low — typical of bond-heavy or conservative portfolios", "pos"),
@@ -185,25 +305,30 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
                 "neutral",
             ),
             MetricRange(
-                "> 25%", "High — concentrated growth stocks, tech, or leveraged exposure", "neg"
+                "> 25%", "High — concentrated growth stocks, tech, or single-sector risk", "neg"
             ),
         ),
     ),
     "sharpe": MetricDefinition(
         key="sharpe",
         title="Sharpe Ratio",
-        formula="Sharpe = √252 × Mean(Daily Excess Return) / StdDev(Daily Return)",
+        formula="Sharpe = sqrt(252) * (mean(r_p) - r_f / 252) / sigma_p",
+        formula_html=_eq(
+            _t("Sharpe"),
+            f"{_sqrt('252')} &middot; "
+            f"{_frac(_v('r', 'p', bar=True) + ' &minus; ' + _v('r', 'f') + ' / 252', _v('&sigma;', 'p'))}",
+        ),
         explanation=(
             "Measures how much annualized return you earn for each unit of total volatility "
-            "(both upside surges and downside drops). Higher values indicate more efficient "
-            "compensation for the risk taken."
+            "(both upside surges and downside drops), using a 0% baseline risk-free rate by default. "
+            "Higher values indicate more efficient compensation for the risk taken."
         ),
         example=(
             "A portfolio delivering a +15% annualized return with 12% annualized volatility "
-            "(at a 0% baseline risk-free rate) achieves a Sharpe ratio of 15% / 12% = 1.25."
+            "(at r_f = 0%) achieves a Sharpe ratio of 15% / 12% = 1.25."
         ),
         ranges=(
-            MetricRange("< 0.0", "Negative — portfolio lost value over the measured window", "neg"),
+            MetricRange("< 0.0", "Negative — portfolio lost value on a time-weighted basis", "neg"),
             MetricRange(
                 "0.0 – 1.0", "Sub-optimal to modest return per unit of volatility", "neutral"
             ),
@@ -214,18 +339,28 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "sortino": MetricDefinition(
         key="sortino",
         title="Sortino Ratio",
-        formula="Sortino = √252 × Mean(Daily Return) / DownsideDeviation(Return < 0)",
+        formula="Sortino = sqrt(252) * mean(r_excess) / sqrt((1 / N) * sum_{t=1..N} min(r_t, 0)^2)",
+        formula_html=_eq(
+            _t("Sortino"),
+            _frac(
+                f"{_sqrt('252')} &middot; {_v('r', 'excess', bar=True)}",
+                _sqrt(
+                    f"{_frac('1', _v('N'))} {_bigop('&sum;', 't=1', 'N')} "
+                    f"{_t('min')}{_paren(_v('r', 't,excess') + ', 0')}<sup>2</sup>"
+                ),
+            ),
+        ),
         explanation=(
-            "Refines the Sharpe ratio by penalizing only harmful downside volatility (negative "
-            "days) rather than upside rallies. Ideal for growth portfolios that experience sharp "
-            "positive breakouts without frequent losses."
+            "Refines the Sharpe ratio by penalizing only harmful downside deviations below zero "
+            "across all trading days, rather than upside rallies. Ideal for growth portfolios that "
+            "experience sharp positive breakouts without frequent losses."
         ),
         example=(
-            "If annualized return is +16% and annualized downside deviation is 9% (even though "
-            "total volatility is 15%), the Sortino ratio is 16% / 9% = 1.78."
+            "If annualized return is +16% and annualized target downside deviation is 9% (even "
+            "though total volatility is 15%), the Sortino ratio is 16% / 9% = 1.78."
         ),
         ranges=(
-            MetricRange("< 0.0", "Negative average return", "neg"),
+            MetricRange("< 0.0", "Negative average daily return", "neg"),
             MetricRange("0.0 – 1.0", "Modest compensation for downside risk", "neutral"),
             MetricRange("1.0 – 2.0", "Good — downside swings are well-compensated", "pos"),
             MetricRange("> 2.0", "Very strong — limited downside relative to gains", "pos"),
@@ -234,20 +369,26 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "alpha": MetricDefinition(
         key="alpha",
         title="Annualized Alpha (Jensen's Alpha)",
-        formula="Alpha = [Mean(R_p) − Beta × Mean(R_b)] × 252",
+        formula="alpha = [mean(r_p) - beta * mean(r_b)] * 252",
+        formula_html=_eq(
+            _v("&alpha;"),
+            f"<span class='m-delim'>[</span>{_v('r', 'p', bar=True)} "
+            f"<span class='m-bin'>&minus;</span> {_v('&beta;')} &middot; {_v('r', 'b', bar=True)}"
+            f"<span class='m-delim'>]</span> <span class='m-bin'>&times;</span> 252",
+        ),
         explanation=(
             "Measures the excess annualized return your portfolio generated above (or below) what "
             "its market sensitivity (Beta) to the primary benchmark would predict. Positive alpha "
             "indicates value added through stock picking or sector allocation."
         ),
         example=(
-            "If the S&P 500 rises +10%, your portfolio Beta is 1.20 (implying +12% expected market "
-            "return), and your portfolio actually returns +15.5%, your annualized Alpha is +3.50%."
+            "If the S&P 500 rises +10% annualized, your portfolio Beta is 1.20 (implying +12.0% "
+            "expected market return), and your portfolio achieves +15.5%, your Alpha is +3.50%."
         ),
         ranges=(
             MetricRange("> +2.0%", "Strong outperformance after adjusting for market Beta", "pos"),
             MetricRange(
-                "-2.0% to +2.0%", "Roughly in line with benchmark risk exposure", "neutral"
+                "-2.0% to +2.0%", "Broadly in line with benchmark risk exposure", "neutral"
             ),
             MetricRange("< -2.0%", "Underperformed a Beta-equivalent passive position", "neg"),
         ),
@@ -255,7 +396,14 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "beta": MetricDefinition(
         key="beta",
         title="Portfolio Beta",
-        formula="Beta = Cov(R_portfolio, R_benchmark) / Var(R_benchmark)",
+        formula="beta = Cov(r_p, r_b) / Var(r_b)",
+        formula_html=_eq(
+            _v("&beta;"),
+            _frac(
+                f"{_t('Cov')}{_paren(_v('r', 'p') + ', ' + _v('r', 'b'))}",
+                f"{_t('Var')}{_paren(_v('r', 'b'))}",
+            ),
+        ),
         explanation=(
             "Measures how sensitively your portfolio moves when the benchmark index moves by 1%, "
             "both expressed in the report currency. A Beta of 1.00 moves in lockstep with the index."
@@ -265,20 +413,27 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
             "average to a +2.5% move in your portfolio (and a −2.5% move on a −2.0% market drop)."
         ),
         ranges=(
-            MetricRange("< 0.85", "Defensive — less sensitive to broad market swings", "pos"),
-            MetricRange("0.85 – 1.15", "Market-like sensitivity close to the index", "neutral"),
             MetricRange(
-                "> 1.15", "Aggressive — amplifies both market rallies and sell-offs", "neg"
+                "< 0.85", "Defensive — lower sensitivity to broad equity swings", "neutral"
+            ),
+            MetricRange("0.85 – 1.15", "Market-like sensitivity close to the benchmark", "pos"),
+            MetricRange(
+                "> 1.15", "High-beta — amplifies both market rallies and drawdowns", "neutral"
             ),
         ),
     ),
     "max_drawdown": MetricDefinition(
         key="max_drawdown",
         title="Maximum Drawdown (MDD)",
-        formula="MDD = min_t [(Wealth_t − PeakWealth_{0..t}) / PeakWealth_{0..t}]",
+        formula="MDD = min_t [(W_t - max_{s<=t} W_s) / max_{s<=t} W_s]",
+        formula_html=_eq(
+            _t("MDD"),
+            f"{_under('min', 't')} "
+            f"{_paren(_frac(_v('W', 't') + ' &minus; ' + _under('max', 's &le; t') + ' ' + _v('W', 's'), _under('max', 's &le; t') + ' ' + _v('W', 's')))}",
+        ),
         explanation=(
             "Captures the worst peak-to-trough percentage drop in the portfolio's time-weighted "
-            "wealth index before a new high was reached. Represents the deepest historical storm "
+            "wealth index before a new peak was reached. Represents the deepest historical decline "
             "an investor had to sit through."
         ),
         example=(
@@ -298,18 +453,20 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "calmar": MetricDefinition(
         key="calmar",
         title="Calmar Ratio",
-        formula="Calmar = Annualized TWR / |Maximum Drawdown|",
+        formula="Calmar = TWR_ann / |MDD|",
+        formula_html=_eq(_t("Calmar"), _frac(_t("TWR", "ann"), _abs(_t("MDD")))),
         explanation=(
-            "Compares compound annual growth directly against the worst historical peak-to-trough "
-            "drawdown. Answers how many percentage points of annual return you earned per percentage "
-            "point of maximum pain."
+            "Compares compound annualized time-weighted growth directly against the magnitude of "
+            "the worst historical drawdown. Answers how much annual return you earned per unit of "
+            "peak-to-trough pain."
         ),
         example=(
             "An annualized TWR of +14.0% paired with a Maximum Drawdown of −20.0% gives a Calmar "
             "ratio of 14.0% / 20.0% = 0.70."
         ),
         ranges=(
-            MetricRange("< 0.5", "High drawdown cost relative to compound annual growth", "neg"),
+            MetricRange("< 0.0", "Negative compound return over the holding window", "neg"),
+            MetricRange("0.0 – 0.5", "Positive growth, but high drawdown cost", "neutral"),
             MetricRange("0.5 – 1.0", "Healthy balance for long-only equity portfolios", "neutral"),
             MetricRange("> 1.0", "Strong — annual compound return exceeds worst drawdown", "pos"),
         ),
@@ -317,10 +474,14 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "var_95": MetricDefinition(
         key="var_95",
         title="Daily Value at Risk (Historical 95% VaR)",
-        formula="VaR_95 = 5th Percentile of Daily TWR Returns",
+        formula="VaR_95 = Percentile_5(r_1, r_2, ..., r_T)",
+        formula_html=_eq(
+            _t("VaR", "95%"),
+            f"{_t('Q', '0.05')}{_paren(_v('r', '1') + ', ' + _v('r', '2') + ', &hellip;, ' + _v('r', 'T'))}",
+        ),
         explanation=(
-            "Shows the threshold loss exceeded on only the worst 5% of trading days (roughly 1 day "
-            "per trading month) based on your actual historical return distribution."
+            "Shows the empirical threshold loss exceeded on only the worst 5% of trading days "
+            "(roughly 1 day per trading month) based on your actual historical daily TWR returns."
         ),
         example=(
             "A Daily VaR (95%) of −1.85% on a 100,000 PLN portfolio means that on 95% of days "
@@ -335,11 +496,12 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "win_rate": MetricDefinition(
         key="win_rate",
         title="Closed-Lot Win Rate",
-        formula="Win Rate = Winning Closed Lots / Total Closed Lots",
+        formula="Win Rate = N_winning_lots / N_closed_lots",
+        formula_html=_eq(_t("Win Rate"), _frac(_v("N", "wins"), _v("N", "closed"))),
         explanation=(
-            "Percentage of closed FIFO stock lots that were sold for a net profit (after FX and "
-            "commissions). High win rates feel comfortable, though trend-following portfolios can "
-            "also thrive with a ~45% win rate if winners are much larger than losers."
+            "Percentage of closed FIFO stock lots that were sold for a net PLN profit (after FX "
+            "and commissions). High win rates feel comfortable, though trend-following portfolios "
+            "can also thrive with a ~45% win rate if winners are much larger than losers."
         ),
         example=(
             "Closing 12 FIFO lots where 8 realized a net PLN profit and 4 realized a loss gives a "
@@ -358,11 +520,18 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "profit_factor": MetricDefinition(
         key="profit_factor",
         title="Profit Factor",
-        formula="Profit Factor = Gross Closed Profits / |Gross Closed Losses|",
+        formula="Profit Factor = sum_{i in wins} Gain_i / |sum_{j in losses} Loss_j|",
+        formula_html=_eq(
+            _t("Profit Factor"),
+            _frac(
+                f"{_bigop('&sum;', 'i &isin; wins')} {_v('G', 'i')}",
+                _abs(f"{_bigop('&sum;', 'j &isin; losses')} {_v('L', 'j')}"),
+            ),
+        ),
         explanation=(
-            "Measures how many units of realized gross profit were earned for every 1 unit of "
-            "realized gross loss across closed positions. Combines both hit rate and payoff ratio "
-            "into a single effectiveness number."
+            "Measures how many PLN of realized gross profit were earned for every 1 PLN of "
+            "realized gross loss across closed FIFO lot slices. Combines hit rate and payoff ratio "
+            "into a single effectiveness metric."
         ),
         example=(
             "If profitable sales summed to +9,000 PLN and losing sales summed to −4,000 PLN, the "
@@ -378,7 +547,13 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "best_month": MetricDefinition(
         key="best_month",
         title="Best Monthly Return",
-        formula="Best Month = max_m [Π_{t in m} (1 + r_t) − 1]",
+        formula="Best Month = max_m [prod_{t in m} (1 + r_t) - 1]",
+        formula_html=_eq(
+            _t("Best Month"),
+            f"{_under('max', 'm')} "
+            f"<span class='m-delim'>[</span>{_bigop('&prod;', 't &isin; m')} "
+            f"{_paren('1 + ' + _v('r', 't'))} <span class='m-bin'>&minus;</span> 1<span class='m-delim'>]</span>",
+        ),
         explanation=(
             "The highest calendar-month time-weighted return achieved by the portfolio across its "
             "entire history, unaffected by deposits made during that month."
@@ -395,7 +570,13 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "worst_month": MetricDefinition(
         key="worst_month",
         title="Worst Monthly Return",
-        formula="Worst Month = min_m [Π_{t in m} (1 + r_t) − 1]",
+        formula="Worst Month = min_m [prod_{t in m} (1 + r_t) - 1]",
+        formula_html=_eq(
+            _t("Worst Month"),
+            f"{_under('min', 'm')} "
+            f"<span class='m-delim'>[</span>{_bigop('&prod;', 't &isin; m')} "
+            f"{_paren('1 + ' + _v('r', 't'))} <span class='m-bin'>&minus;</span> 1<span class='m-delim'>]</span>",
+        ),
         explanation=(
             "The sharpest single calendar-month percentage decline in time-weighted value across "
             "the portfolio's history."
@@ -413,7 +594,11 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "fx_conversion_cost": MetricDefinition(
         key="fx_conversion_cost",
         title="Estimated FX Conversion Cost (0.5%)",
-        formula="Estimated Fee = Converted PLN Capital × 0.5%",
+        formula="Fee_est = 0.005 * sum_k PLN_converted,k",
+        formula_html=_eq(
+            _t("Fee", "est"),
+            f"0.005 &middot; {_bigop('&sum;', 'k')} {_t('PLN', 'converted,k')}",
+        ),
         explanation=(
             "Estimates the implicit currency conversion spread paid when funding USD or EUR "
             "accounts from PLN at XTB's standard 0.5% conversion markup. Because cash operations "
@@ -427,7 +612,11 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "investment_gain": MetricDefinition(
         key="investment_gain",
         title="Pure Investment Gain (PLN)",
-        formula="Investment Gain = Σ_c [(LocalValue_c − NetDepositedUnits_c) × CurrentFX_c]",
+        formula="G_inv = sum_c (V_c - D_c) * FX_c",
+        formula_html=_eq(
+            _v("G", "inv"),
+            f"{_bigop('&sum;', 'c')} {_paren(_v('V', 'c') + ' &minus; ' + _v('D', 'c'))} &middot; {_t('FX', 'c')}",
+        ),
         explanation=(
             "Isolates how much PLN profit came strictly from stock prices, dividends, and interest "
             "inside each currency bucket, evaluated at current exchange rates."
@@ -440,7 +629,11 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "fx_gain": MetricDefinition(
         key="fx_gain",
         title="Currency (FX) Gain / Loss (PLN)",
-        formula="FX Gain = Σ_c [NetDepositedUnits_c × CurrentFX_c − PLN_Spent_c]",
+        formula="G_fx = sum_c (D_c * FX_c - P_c)",
+        formula_html=_eq(
+            _v("G", "FX"),
+            f"{_bigop('&sum;', 'c')} {_paren(_v('D', 'c') + ' &middot; ' + _t('FX', 'c') + ' &minus; ' + _v('P', 'c'))}",
+        ),
         explanation=(
             "Isolates how much PLN profit or loss came from PLN strengthening or weakening against "
             "your foreign-currency capital base (including initial conversion spreads)."
@@ -453,7 +646,11 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "pit38_revenue": MetricDefinition(
         key="pit38_revenue",
         title="PIT-38 Section C Revenue (Przychód)",
-        formula="Revenue = Σ [Gross Sale Proceeds × NBP_Table_A(SellDate − 1bd)]",
+        formula="Revenue = sum_k Proceeds_k * NBP_{D_sell,k - 1}",
+        formula_html=_eq(
+            _t("Revenue", "PLN"),
+            f"{_bigop('&sum;', 'k')} {_t('Proceeds', 'k')} &middot; {_t('NBP', 'D_sell &minus; 1')}",
+        ),
         explanation=(
             "Total gross proceeds from selling stocks/ETFs during the selected tax year, converted "
             "to PLN using the official NBP Table A mid rate from the last business day preceding "
@@ -467,7 +664,11 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "pit38_costs": MetricDefinition(
         key="pit38_costs",
         title="PIT-38 Deductible Costs (Koszty uzyskania przychodu)",
-        formula="Costs = Σ [FIFO Buy Cost × NBP(BuyDate − 1bd)] + Commissions_PLN",
+        formula="Costs = sum_k (Cost_FIFO,k * NBP_{D_buy,k - 1} + Comm_PLN,k)",
+        formula_html=_eq(
+            _t("Costs", "PLN"),
+            f"{_bigop('&sum;', 'k')} {_paren(_t('Cost', 'FIFO,k') + ' &middot; ' + _t('NBP', 'D_buy &minus; 1') + ' + ' + _t('Comm', 'PLN,k'))}",
+        ),
         explanation=(
             "Original acquisition cost of the exact shares sold under First-In, First-Out (FIFO) "
             "lot matching—each lot translated at the D−1 NBP rate from its own purchase date—plus "
@@ -481,7 +682,11 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "pit38_income": MetricDefinition(
         key="pit38_income",
         title="PIT-38 Section C Profit / Loss (Dochód / Strata)",
-        formula="Net Result = Section C Revenue − Deductible Costs",
+        formula="Net_C = Revenue_PLN - Costs_PLN",
+        formula_html=_eq(
+            _t("Net", "Section C"),
+            f"{_t('Revenue', 'PLN')} <span class='m-bin'>&minus;</span> {_t('Costs', 'PLN')}",
+        ),
         explanation=(
             "Taxable capital gain (Dochód) or tax loss (Strata) on closed equity positions in the "
             "selected calendar year. Notice that FX movements can create a PLN taxable profit even "
@@ -505,7 +710,11 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "pit38_wht_credit": MetricDefinition(
         key="pit38_wht_credit",
         title="Foreign Withholding Tax Credit (Podatek u źródła)",
-        formula="WHT Credit = min(Foreign WHT Paid_PLN, 19% × Gross Dividend_PLN)",
+        formula="Credit = sum_j min(WHT_PLN,j, 0.19 * Div_gross,PLN,j)",
+        formula_html=_eq(
+            _t("Credit", "WHT"),
+            f"{_bigop('&sum;', 'j')} {_t('min')}{_paren(_t('WHT', 'PLN,j') + ', 0.19 &middot; ' + _t('Div', 'PLN,j'))}",
+        ),
         explanation=(
             "Foreign tax withheld at source on dividends (converted at D−1 NBP rate) can be "
             "credited against Poland's 19% dividend tax, capped at 19% per dividend payment under "
@@ -520,7 +729,12 @@ METRIC_DEFINITIONS: dict[str, MetricDefinition] = {
     "pit38_total_tax": MetricDefinition(
         key="pit38_total_tax",
         title="Total Polish PIT-38 Tax Payable",
-        formula="Total Tax = Section C Tax (19%) + Dividend Surcharge (Do dopłaty)",
+        formula="Tax_total = round(0.19 * max(Net_C, 0)) + round(Tax_div,due)",
+        formula_html=_eq(
+            _t("Tax", "total"),
+            f"0.19 &middot; {_t('max')}{_paren(_t('Net', 'C') + ', 0')} "
+            f"<span class='m-bin'>+</span> {_bigop('&sum;', 'j')} {_paren('0.19 &middot; ' + _t('Div', 'j') + ' &minus; ' + _t('Credit', 'j'))}",
+        ),
         explanation=(
             "Combined estimated Polish tax obligation for the selected year across closed equity "
             "trades (Section C) and foreign dividend surcharges (Section G). Capital losses in "

@@ -10,6 +10,7 @@ import pandas as pd
 
 from xtb_analyzer.fx import fetch_fx_rates, fetch_nbp_currency_series
 from xtb_analyzer.models import Account, Transaction
+from xtb_analyzer.prices import warsaw_today
 
 PIT38_TAX_RATE = Decimal("0.19")
 CENT = Decimal("0.01")
@@ -231,7 +232,12 @@ def _ensure_fx_for_tax(
     needed_currencies = {
         tx.currency.upper() for tx in all_txs if tx.currency and tx.currency.upper() != "PLN"
     }
-    nbp_base = fx.attrs.get("nbp_table_a", fx).copy() if not fx.empty else pd.DataFrame()
+    is_yahoo_fallback = fx.attrs.get("fx_source") == "yahoo" and "nbp_table_a" not in fx.attrs
+    nbp_base = (
+        pd.DataFrame()
+        if is_yahoo_fallback
+        else (fx.attrs.get("nbp_table_a", fx).copy() if not fx.empty else pd.DataFrame())
+    )
     missing_cols = [c for c in sorted(needed_currencies) if f"{c}PLN" not in nbp_base.columns]
     if missing_cols:
         extra_series = {
@@ -428,14 +434,16 @@ def compute_pit38_report(
         lot_key = (tx.account_id, symbol)
         tx_day = tx.timestamp.date()
 
-        # Apply any stock splits occurring up to and including tx_day before executing the trade
-        if symbol in split_events and lot_key in open_lots:
+        # Apply stock splits effective on or before tx_day strictly to lots opened before sp_date.
+        if symbol in split_events:
             done = applied_splits.setdefault(lot_key, set())
             for sp_date, sp_ratio in split_events[symbol]:
                 if sp_date <= tx_day and sp_date not in done:
-                    for lot in open_lots[lot_key]:
-                        lot.remaining_shares *= sp_ratio
-                        lot.unit_price_orig /= sp_ratio
+                    sp_iso = sp_date.isoformat()
+                    for lot in open_lots.get(lot_key, []):
+                        if lot.buy_date < sp_iso:
+                            lot.remaining_shares *= sp_ratio
+                            lot.unit_price_orig /= sp_ratio
                     done.add(sp_date)
 
         shares = Decimal(str(tx.shares))
@@ -636,7 +644,7 @@ def compute_pit38_report(
                     )
                 )
 
-    # Pair withholding_tax rows with dividend rows on (account_id, symbol) within [-1, +3] days
+    # Pair withholding_tax rows with dividend rows on (account_id, symbol) within [-2, +7] days
     dividend_txs.sort(key=lambda t: t.timestamp)
     wht_txs.sort(key=lambda t: t.timestamp)
     paired_whts: dict[int, list[Transaction]] = {i: [] for i in range(len(dividend_txs))}
@@ -648,7 +656,7 @@ def compute_pit38_report(
             if dtx.account_id != wtx.account_id or (dtx.symbol or "") != (wtx.symbol or ""):
                 continue
             day_diff = (wtx.timestamp.date() - dtx.timestamp.date()).days
-            if -1 <= day_diff <= 3:
+            if -2 <= day_diff <= 7:
                 sec_diff = abs((wtx.timestamp - dtx.timestamp).total_seconds())
                 # Prefer a dividend that doesn't already have a negative WHT attached unless this is a refund/adjustment
                 already_has_wht = len(paired_whts[idx]) > 0 and wtx.amount < 0
@@ -726,13 +734,18 @@ def compute_pit38_report(
     ref_end_date = pd.Timestamp(last_date).date() if last_date is not None else max_tx_date
     max_yr = max(max_tx_date.year, ref_end_date.year)
     available_years = list(range(max_yr, min_yr - 1, -1))
+    current_cal_year = int(warsaw_today().year)
 
     by_year: dict[int, Pit38YearSummary] = {}
     for yr in available_years:
         yr_matches = [m for m in fifo_matches if m.tax_year == yr]
         yr_divs = [d for d in dividend_entries if d.tax_year == yr]
         yr_comm = standalone_comm_by_year.get(yr, Decimal("0.00"))
-        is_ytd = yr == max_yr and ref_end_date < date(yr, 12, 31)
+        is_ytd = (
+            yr == max_yr
+            and ref_end_date < date(yr, 12, 31)
+            and (last_date is not None or yr >= current_cal_year)
+        )
         by_year[yr] = _build_summary(yr, is_ytd, yr_matches, yr_comm, yr_divs)
 
     total_standalone_comm = sum(standalone_comm_by_year.values(), Decimal("0.00"))

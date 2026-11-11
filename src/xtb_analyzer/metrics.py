@@ -11,7 +11,7 @@ from xtb_analyzer.benchmark import NASDAQ100_TR_TICKER, SP500_TR_TICKER
 from xtb_analyzer.cash import build_cash_ledger, cash_summary
 from xtb_analyzer.flows import analyze_conversion_losses, conversion_summary
 from xtb_analyzer.models import Account
-from xtb_analyzer.prices import fetch_benchmark
+from xtb_analyzer.prices import fetch_benchmark, warsaw_today
 
 
 @dataclass
@@ -74,17 +74,7 @@ def _sharpe(returns: pd.Series, risk_free: float = 0.0) -> float:
     if returns.empty or returns.std() == 0:
         return 0.0
     excess = returns - risk_free / 252
-    return float(np.sqrt(252) * excess.mean() / excess.std())
-
-
-def _sortino(returns: pd.Series, risk_free: float = 0.0) -> float:
-    if returns.empty:
-        return 0.0
-    excess = returns - risk_free / 252
-    downside = excess[excess < 0]
-    if downside.empty or downside.std() == 0:
-        return 0.0
-    return float(np.sqrt(252) * excess.mean() / downside.std())
+    return float(np.sqrt(252) * excess.mean() / returns.std())
 
 
 def _beta_alpha(
@@ -278,7 +268,7 @@ def company_pnl_summary(
         all_txs = [tx for acc in accounts for tx in acc.transactions]
         if all_txs:
             start = min(tx.timestamp for tx in all_txs).date().isoformat()
-            end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
+            end = (warsaw_today() + pd.Timedelta(days=1)).date().isoformat()
             fx_df = fetch_fx_rates(start=start, end=end, use_cache=use_cache, refresh_latest=False)
             fx_row = fx_df.iloc[-1] if not fx_df.empty else pd.Series(dtype=float)
         else:

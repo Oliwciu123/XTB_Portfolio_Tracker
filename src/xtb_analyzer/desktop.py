@@ -285,7 +285,7 @@ _DESKTOP_START_HTML = """<!DOCTYPE html>
         const st = await window.pywebview.api.get_build_status();
         if (!st) return;
         if (st.state === 'running') {
-          showStatus(st.progress || 15, st.message || 'Generowanie raportu…', false);
+          showStatus(st.progress || 15, st.message || 'Generating report…', false);
         } else if (st.state === 'error') {
           clearInterval(pollTimer);
           pollTimer = null;
@@ -309,7 +309,7 @@ _DESKTOP_START_HTML = """<!DOCTYPE html>
     }
     busy = true;
     heading.textContent = file.name;
-    showStatus(10, 'Wczytywanie ' + file.name + '…', false);
+    showStatus(10, 'Loading ' + file.name + '…', false);
     const reader = new FileReader();
     reader.onload = async function(ev) {
       const result = String(ev.target.result || '');
@@ -381,6 +381,8 @@ class _LiveReportBridge:
         self._report_url = ""
         self._custom_tickers: set[str] = set()
         self._last_data = None
+        self._cached_accounts_key: tuple | None = None
+        self._cached_accounts: list | None = None
         self._live_lock = threading.Lock()
 
     def set_window(self, window) -> None:
@@ -496,77 +498,95 @@ class _LiveReportBridge:
         threading.Thread(target=work, daemon=True).start()
         return {"started": True, "filename": filename}
 
-    def get_live_update(self, currency: str = "pln") -> dict[str, object] | None:
+    def _load_cached_accounts(self) -> list:
         from xtb_analyzer.parser import discover_export_files, load_accounts
+
+        data_dir = self._data_dir()
+        csv_files = discover_export_files(data_dir)
+        if not csv_files:
+            return []
+        key = (
+            str(data_dir.resolve()),
+            tuple((str(p), p.stat().st_mtime_ns, p.stat().st_size) for p in csv_files),
+        )
+        if self._cached_accounts_key != key or self._cached_accounts is None:
+            self._cached_accounts = load_accounts(csv_files)
+            self._cached_accounts_key = key
+        return self._cached_accounts
+
+    def get_live_update(self, currency: str = "pln") -> dict[str, object] | None:
         from xtb_analyzer.report import build_live_payload, collect_report_data
 
-        csv_files = discover_export_files(self._data_dir())
-        if not csv_files:
+        if not self._live_lock.acquire(blocking=False):
             return None
-        accounts = load_accounts(csv_files)
-        data = collect_report_data(
-            accounts,
-            currency=currency,
-            use_cache=True,
-            refresh_latest=True,
-        )
-        self._last_data = data
-        return build_live_payload(data, sorted(self._custom_tickers))
+        try:
+            accounts = self._load_cached_accounts()
+            if not accounts:
+                return None
+            data = collect_report_data(
+                accounts,
+                currency=currency,
+                use_cache=True,
+                refresh_latest=True,
+            )
+            self._last_data = data
+            return build_live_payload(data, sorted(self._custom_tickers))
+        finally:
+            self._live_lock.release()
 
     def switch_currency(self, currency: str = "pln") -> dict[str, object]:
         """Rebuild report in the selected currency (PLN/USD/EUR) and reload inside the desktop window."""
-        from xtb_analyzer.parser import discover_export_files, load_accounts
         from xtb_analyzer.report import collect_report_data, render_html_report
 
         currency = (currency or "pln").lower()
         if currency not in ("pln", "usd", "eur"):
             currency = "pln"
         self._currency = currency
-        csv_files = discover_export_files(self._data_dir())
-        if not csv_files:
-            return {"ok": False, "error": "No XTB account exports have been loaded."}
-        try:
-            accounts = load_accounts(csv_files)
-            data = collect_report_data(
-                accounts,
-                currency=currency,
-                use_cache=True,
-                refresh_latest=False,
-            )
-            if self._html_path is not None:
-                self._html_path.write_text(render_html_report(data), encoding="utf-8")
-            return {"ok": True, "currency": currency}
-        except Exception as exc:
-            return {"ok": False, "error": str(exc)}
+        with self._live_lock:
+            try:
+                accounts = self._load_cached_accounts()
+                if not accounts:
+                    return {"ok": False, "error": "No XTB account exports have been loaded."}
+                data = collect_report_data(
+                    accounts,
+                    currency=currency,
+                    use_cache=True,
+                    refresh_latest=False,
+                )
+                self._last_data = data
+                if self._html_path is not None:
+                    self._html_path.write_text(render_html_report(data), encoding="utf-8")
+                return {"ok": True, "currency": currency}
+            except Exception as exc:
+                return {"ok": False, "error": str(exc)}
 
     def get_custom_benchmark(self, ticker: str, currency: str = "pln") -> dict[str, object]:
         from xtb_analyzer.flows import attach_deposits_to_nav
-        from xtb_analyzer.parser import discover_export_files, load_accounts
         from xtb_analyzer.portfolio import build_nav_series
         from xtb_analyzer.report import build_custom_benchmark_payload
 
-        csv_files = discover_export_files(self._data_dir())
-        if not csv_files:
-            return {"error": "No XTB account exports have been loaded."}
-        try:
-            accounts = load_accounts(csv_files)
-            if self._last_data is not None and self._last_data.currency == currency:
-                nav = self._last_data.nav
-            else:
-                nav, _, _ = build_nav_series(accounts, use_cache=True, live_prices=False)
-                nav = attach_deposits_to_nav(nav, accounts, use_cache=True)
-            payload = build_custom_benchmark_payload(
-                accounts,
-                nav,
-                ticker,
-                currency=currency,
-                use_cache=True,
-                refresh_latest=True,
-            )
-            self._custom_tickers.add(ticker.strip().upper())
-            return payload
-        except Exception as exc:
-            return {"error": str(exc)}
+        with self._live_lock:
+            try:
+                accounts = self._load_cached_accounts()
+                if not accounts:
+                    return {"error": "No XTB account exports have been loaded."}
+                if self._last_data is not None and self._last_data.currency == currency:
+                    nav = self._last_data.nav
+                else:
+                    nav, _, _ = build_nav_series(accounts, use_cache=True, live_prices=False)
+                    nav = attach_deposits_to_nav(nav, accounts, use_cache=True)
+                payload = build_custom_benchmark_payload(
+                    accounts,
+                    nav,
+                    ticker,
+                    currency=currency,
+                    use_cache=True,
+                    refresh_latest=True,
+                )
+                self._custom_tickers.add(ticker.strip().upper())
+                return payload
+            except Exception as exc:
+                return {"error": str(exc)}
 
 
 def _capture_readiness(window, ready_file: Path | None, report: bool) -> None:
@@ -1117,6 +1137,10 @@ def main(argv: list[str] | None = None) -> int:
             buffer.seek(0)
             assert pd.read_parquet(buffer).iloc[0, 0] == 1.25
             assert asset_path("assets", "app.ico").is_file()
+            from datetime import datetime
+            from zoneinfo import ZoneInfo
+
+            assert datetime.now(ZoneInfo("Europe/Warsaw")).tzname() in {"CET", "CEST"}
             if is_frozen():
                 from xtb_analyzer.market_data import MarketData
                 from xtb_analyzer.parser import discover_export_files, load_accounts

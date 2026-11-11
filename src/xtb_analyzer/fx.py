@@ -6,15 +6,16 @@ import pandas as pd
 import requests
 import yfinance as yf
 
+from xtb_analyzer.prices import warsaw_today
+
 CACHE_DIR = Path("data/cache/fx")
 
 
 def _nbp_series(currency: str, start: str, end: str | None = None) -> pd.Series:
     """Return PLN per 1 unit of foreign currency (NBP table A)."""
     code = currency.lower()
-    last = min(
-        pd.Timestamp(end or pd.Timestamp.today()).normalize(), pd.Timestamp.today().normalize()
-    )
+    today_pl = warsaw_today()
+    last = min(pd.Timestamp(end or today_pl).normalize(), today_pl)
     cursor = pd.Timestamp(start) - pd.Timedelta(days=14)
     rows = []
     while cursor <= last:
@@ -52,7 +53,7 @@ def _apply_live_fx(frame: pd.DataFrame) -> pd.DataFrame:
     if not live:
         return frame
     updated = frame.copy()
-    today = pd.Timestamp.today().normalize()
+    today = warsaw_today()
     if today not in updated.index:
         updated.loc[today] = updated.iloc[-1]
     if "USDPLN=X" in live:
@@ -71,9 +72,11 @@ def fetch_fx_rates(
     refresh_latest: bool = False,
 ) -> pd.DataFrame:
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    cache_file = CACHE_DIR / "fx_rates_v2.parquet"
-    end = end or (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
+    cache_file = CACHE_DIR / "fx_rates_v3.parquet"
+    nbp_cache_file = CACHE_DIR / "nbp_table_a_fx_v1.parquet"
+    end = end or (warsaw_today() + pd.Timedelta(days=1)).date().isoformat()
     lookback_start = pd.Timestamp(start) - pd.Timedelta(days=14)
+    required_min = pd.Timestamp(start) - pd.Timedelta(days=7)
 
     if use_cache and cache_file.exists():
         cached = pd.read_parquet(cache_file)
@@ -81,12 +84,20 @@ def fetch_fx_rates(
         needs_refresh = cached.empty or cached.index.max().date() < pd.Timestamp(
             end
         ).date() - pd.Timedelta(days=4)
-        if not cached.empty and cached.index.min() <= pd.Timestamp(start) and not needs_refresh:
-            nbp_snapshot = cached.copy()
+        if not cached.empty and cached.index.min() <= required_min and not needs_refresh:
+            nbp_snapshot = None
+            if nbp_cache_file.exists():
+                nbp_snapshot = pd.read_parquet(nbp_cache_file)
+                nbp_snapshot.index = pd.to_datetime(nbp_snapshot.index)
             if refresh_latest:
                 cached = _apply_live_fx(cached)
-            cached.attrs["nbp_table_a"] = nbp_snapshot
-            return cached.loc[lookback_start:end]
+            result = cached.loc[lookback_start:end]
+            if nbp_snapshot is not None and not nbp_snapshot.empty:
+                result.attrs["nbp_table_a"] = nbp_snapshot.loc[lookback_start:end]
+                result.attrs["fx_source"] = "nbp"
+            else:
+                result.attrs["fx_source"] = "yahoo"
+            return result
 
     nbp_sourced = False
     try:
@@ -115,14 +126,20 @@ def fetch_fx_rates(
     frame["USDEUR"] = 1 / frame["EURUSD"]
     if frame.empty or frame[["USDPLN", "EURPLN"]].dropna().empty:
         raise ValueError("No FX rates available. Check connectivity to NBP and Yahoo Finance.")
-    nbp_snapshot = frame.copy()
+    base_snapshot = frame.copy()
     if use_cache:
-        nbp_snapshot.to_parquet(cache_file)
+        base_snapshot.to_parquet(cache_file)
+        if nbp_sourced:
+            base_snapshot[["USDPLN", "EURPLN"]].to_parquet(nbp_cache_file)
     if refresh_latest:
         frame = _apply_live_fx(frame)
+    result = frame.loc[lookback_start:end]
     if nbp_sourced:
-        frame.attrs["nbp_table_a"] = nbp_snapshot
-    return frame.loc[lookback_start:end]
+        result.attrs["nbp_table_a"] = base_snapshot[["USDPLN", "EURPLN"]].loc[lookback_start:end]
+        result.attrs["fx_source"] = "nbp"
+    else:
+        result.attrs["fx_source"] = "yahoo"
+    return result
 
 
 def fetch_nbp_currency_series(
@@ -133,16 +150,16 @@ def fetch_nbp_currency_series(
 ) -> pd.Series:
     """Fetch official NBP Table A mid rates (PLN per 1 unit) with local parquet caching."""
     code = currency.upper()
+    today_pl = warsaw_today()
     if code == "PLN":
-        idx = pd.date_range(
-            pd.Timestamp(start) - pd.Timedelta(days=14), end or pd.Timestamp.today()
-        )
+        idx = pd.date_range(pd.Timestamp(start) - pd.Timedelta(days=14), end or today_pl)
         return pd.Series(1.0, index=idx, name="PLNPLN")
 
     CACHE_DIR.mkdir(parents=True, exist_ok=True)
     cache_file = CACHE_DIR / f"nbp_table_a_{code.lower()}.parquet"
-    end_str = end or (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
+    end_str = end or (today_pl + pd.Timedelta(days=1)).date().isoformat()
     lookback_start = pd.Timestamp(start) - pd.Timedelta(days=14)
+    required_min = pd.Timestamp(start) - pd.Timedelta(days=7)
 
     if use_cache and cache_file.exists():
         cached_df = pd.read_parquet(cache_file)
@@ -151,7 +168,7 @@ def fetch_nbp_currency_series(
         needs_refresh = cached.empty or cached.index.max().date() < pd.Timestamp(
             end_str
         ).date() - pd.Timedelta(days=4)
-        if not cached.empty and cached.index.min() <= pd.Timestamp(start) and not needs_refresh:
+        if not cached.empty and cached.index.min() <= required_min and not needs_refresh:
             return cached.loc[lookback_start:end_str].rename(f"{code}PLN")
 
     series = _nbp_series(code, start, end_str)

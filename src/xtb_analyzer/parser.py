@@ -455,7 +455,7 @@ def _find_transaction_header(
         "  • Type;Ticker;Instrument;Time;Amount;ID;Comment;Product  (XTB 2025+)\n"
         "  • Type;Instrument;Ticker;Category;Time;Amount;ID;Comment;Product;Position ID\n"
         "If you exported Closed Positions, use Cash Operations instead "
-        "(xStation → Historia → Cash Operations → Export).\n"
+        "(xStation → History → Cash Operations → Export).\n"
         f"First rows of the file were:\n{preview_text}"
     )
 
@@ -493,7 +493,7 @@ def _currency_from_comments(
                 return "EUR"
             if suffix in {"UK", "GB", "LSE"}:
                 return "GBP"
-            if suffix in {"PL", "WSE"}:
+            if suffix in {"PL", "WA", "WSE"}:
                 return "PLN"
     return None
 

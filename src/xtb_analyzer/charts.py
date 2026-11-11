@@ -26,7 +26,11 @@ CHART_COLORS = {
 
 CHART_LAYOUT = dict(
     template="plotly_dark",
-    font=dict(family="Inter, 'Segoe UI', Arial, sans-serif", size=13, color=CHART_COLORS["text"]),
+    font=dict(
+        family="'Plus Jakarta Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
+        size=13,
+        color=CHART_COLORS["text"],
+    ),
     paper_bgcolor="rgba(0,0,0,0)",
     plot_bgcolor="rgba(0,0,0,0)",
     hovermode="x unified",
@@ -45,14 +49,22 @@ CHART_LAYOUT = dict(
         bgcolor="rgba(0,0,0,0)",
         font=dict(size=12),
     ),
-    hoverlabel=dict(bgcolor="#1e293b", bordercolor="#334155", font_size=12),
+    hoverlabel=dict(
+        bgcolor="#0f172a",
+        bordercolor="#334155",
+        font=dict(
+            family="'Plus Jakarta Sans', Inter, -apple-system, sans-serif",
+            size=12.5,
+            color="#f8fafc",
+        ),
+    ),
 )
 
 PLOTLY_SHOW_CONFIG = {
     "displayModeBar": False,
     "displaylogo": False,
     "responsive": True,
-    "scrollZoom": True,
+    "scrollZoom": False,
     "modeBarButtonsToRemove": ["select2d", "lasso2d", "sendChartToCloud", "sendDataToCloud"],
     "toImageButtonOptions": {"format": "png", "scale": 2},
 }
@@ -193,7 +205,7 @@ RETURN_CHART_LAYOUT = {
     ),
 }
 
-HOVER_RETURN = "%{x|%d %b %Y}<br><b>%{y:.1f}%</b><extra></extra>"
+HOVER_RETURN = "<b>%{meta}</b>: <b>%{y:+.2f}%</b><extra></extra>"
 
 
 @dataclass
@@ -240,6 +252,13 @@ def _style_return_comparison_axes(fig: go.Figure, point_count: int) -> None:
         showgrid=True,
         gridcolor="rgba(100, 116, 139, 0.25)",
         tickmode="auto",
+        hoverformat="%d %b %Y",
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikethickness=1.2,
+        spikecolor="rgba(148, 163, 184, 0.42)",
+        spikedash="dot",
         tickformatstops=[
             dict(dtickrange=[None, 86400000], value="%d %b<br>%H:%M"),
             dict(dtickrange=[86400000, "M1"], value="%d %b"),
@@ -285,6 +304,7 @@ def build_return_comparison_figure(
             x=x_dates,
             y=data.portfolio_monthly.tolist(),
             name=f"Your portfolio ({_format_decimal(data.final_portfolio)}%)",
+            meta="Your portfolio",
             mode="lines",
             line=dict(color=CHART_COLORS["nav"], width=3, shape="linear"),
             fill="tozeroy",
@@ -301,6 +321,7 @@ def build_return_comparison_figure(
                 x=_to_datetime_list(series.index),
                 y=series.tolist(),
                 name=f"{label} ({_format_decimal(data.final_returns[key])}%)",
+                meta=label,
                 mode="lines",
                 line=dict(color=color, width=2.5, shape="linear", dash="solid"),
                 hovertemplate=HOVER_RETURN,
@@ -408,16 +429,19 @@ def plot_nav_with_deposits(nav: pd.DataFrame, currency: str = "pln") -> go.Figur
     current_return = float(nav[return_col].iloc[-1]) if return_col in nav.columns else 0.0
     as_of = nav.index[-1].strftime("%Y-%m-%d")
 
+    curr_lbl = _currency_label(currency)
     fig = go.Figure()
     fig.add_trace(
         go.Scatter(
             x=view.index,
             y=view[dep_col],
             name="Net contributions",
+            meta="Net contributions",
             mode="lines",
             line=dict(color=CHART_COLORS["deposits"], width=2.5, shape="hv"),
             fill="tozeroy",
             fillcolor="rgba(148, 163, 184, 0.12)",
+            hovertemplate=f"<b>%{{meta}}</b>: <b>%{{y:,.2f}} {curr_lbl}</b><extra></extra>",
         )
     )
     fig.add_trace(
@@ -425,8 +449,10 @@ def plot_nav_with_deposits(nav: pd.DataFrame, currency: str = "pln") -> go.Figur
             x=view.index,
             y=view[nav_col],
             name="Portfolio NAV",
+            meta="Portfolio NAV",
             mode="lines",
             line=dict(color=CHART_COLORS["nav"], width=3),
+            hovertemplate=f"<b>%{{meta}}</b>: <b>%{{y:,.2f}} {curr_lbl}</b><extra></extra>",
         )
     )
 
@@ -454,6 +480,15 @@ def plot_nav_with_deposits(nav: pd.DataFrame, currency: str = "pln") -> go.Figur
     )
     _apply_axis_style(fig)
     fig.update_layout(height=400, margin=dict(l=68, r=28, t=90, b=70))
+    fig.update_xaxes(
+        hoverformat="%d %b %Y",
+        showspikes=True,
+        spikemode="across",
+        spikesnap="cursor",
+        spikethickness=1.2,
+        spikecolor="rgba(148, 163, 184, 0.42)",
+        spikedash="dot",
+    )
     fig.update_yaxes(tickformat=",.0f")
     return fig
 
@@ -572,7 +607,7 @@ def plot_conversion_losses(losses: pd.DataFrame, summary: dict[str, float]) -> g
             go.Bar(
                 x=losses["timestamp"],
                 y=losses["total_loss_pln"],
-                name="Prowizja PLN",
+                name="PLN conversion fee",
                 marker_color=CHART_COLORS["loss"],
                 text=[f"{value:.2f}" for value in losses["total_loss_pln"]],
                 textposition="outside",
@@ -606,7 +641,7 @@ def plot_conversion_losses(losses: pd.DataFrame, summary: dict[str, float]) -> g
                 values=[
                     [
                         "Total PLN converted",
-                        "Prowizja XTB (0,5%)",
+                        "XTB conversion fee (0.5%)",
                         "Total estimated FX conversion cost",
                     ],
                     [
@@ -965,7 +1000,7 @@ def plot_rolling_volatility(
         {
             **CHART_LAYOUT,
             "title": dict(
-                text=f"Rolling volatility ({window}days, annualized, {_currency_label(currency)})",
+                text=f"Rolling volatility ({window} days, annualized, {_currency_label(currency)})",
                 x=0.5,
                 xanchor="center",
             ),
@@ -988,7 +1023,6 @@ def plot_sector_allocation(alloc: pd.DataFrame) -> go.Figure:
     frame = alloc.copy()
     unknown = frame["sector"] == "Unknown"
     frame = pd.concat([frame[~unknown], frame[unknown]], ignore_index=True)
-    frame.loc[frame["sector"] == "Unknown", "sector"] = "Nieznany"
     frame = frame.sort_values("market_value_pln", ascending=False)
 
     return plot_allocation_donut(
@@ -1053,8 +1087,8 @@ def plot_company_pnl(company_pnl: pd.DataFrame, currency: str = "pln") -> go.Fig
             customdata=customdata,
             hovertemplate=(
                 "<b>%{y}</b> (%{customdata[0]})<br>"
-                f"Gain ({curr_label}): <b>%{{x:+,.2f}} {curr_label}</b><br>"
-                "Gain w walucie: <b>%{customdata[1]}</b><br>"
+                f"P&L ({curr_label}): <b>%{{x:+,.2f}} {curr_label}</b><br>"
+                "P&L (account currency): <b>%{customdata[1]}</b><br>"
                 "Return: <b>%{customdata[2]}</b><extra></extra>"
             ),
         )

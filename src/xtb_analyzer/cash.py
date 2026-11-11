@@ -34,6 +34,8 @@ def apply_cash(tx: Transaction, ledger: CashLedger) -> None:
             ledger.deposits_pln += tx.amount
         elif rate and rate > 0:
             ledger.deposits_pln += tx.amount / rate
+    elif tx.type == "transfer_in" and tx.currency.upper() == "PLN" and tx.amount > 0:
+        ledger.deposits_pln += tx.amount
     elif tx.type == "dividend":
         ledger.dividends += tx.amount
     elif tx.type == "interest":

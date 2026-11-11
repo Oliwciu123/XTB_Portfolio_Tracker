@@ -37,19 +37,31 @@ uv run xtb-analyzer --data-dir data --output-dir output --currency pln --open
 quotes; historical prices may still be downloaded. `--no-cache` disables disk cache.
 If valuation fails, check history coverage, symbol mapping and the network message.
 
-## Charts
+## Charts and tables
 
 NAV and return charts have day/week/month/year ranges, drag selection, reset and
-PNG export. Monthly returns, company P&L and allocation charts stay fixed and offer
-PNG export. Hover shows values without permanently drawing points on each line.
-Comparison CSV export saves the selected benchmark series.
+PNG export. Mouse-wheel scrolling scrolls the page by default; click inside any
+chart to enable wheel zoom, and click outside or press `Escape` to exit zoom mode.
+Long tables (FIFO lot matching, dividends, deposit operations and company results)
+show a concise preview with an expand/collapse toggle and row count while search,
+filters and CSV exports always cover every row. Report metadata, data-source notes
+and the non-advice disclaimer live in the header **About** popover.
 
 ## Share a Windows desktop build
 
 On Windows, install uv, then run `build_windows.bat`. It builds a PyInstaller
-application and `dist/XTBPortfolioAnalyzer-Windows.zip` with a SHA-256 checksum.
-Share that ZIP, not your repository's `data/` or `output/` directories. The builder
-includes application binaries and this guide, not user histories or caches.
+application, writes `dist/XTBPortfolioAnalyzer-Windows.zip` with a SHA-256 checksum,
+and creates or refreshes an **XTB Portfolio Analyzer** shortcut (with the app icon)
+on your Windows Desktop pointing at `dist\XTBPortfolioAnalyzer\XTBPortfolioAnalyzer.exe`.
+You can also create or refresh the Desktop shortcut on its own from the repository root:
+
+```powershell
+uv run python scripts/create_desktop_shortcut.py --build-if-missing
+```
+
+Share `dist/XTBPortfolioAnalyzer-Windows.zip`, not your repository's `data/` or
+`output/` directories. The builder includes application binaries and this guide,
+not user histories, caches or local `.lnk` shortcuts.
 
 The recipient extracts the entire ZIP and opens `XTBPortfolioAnalyzer.exe` inside
 the application folder. Keep `_internal` beside the executable. Windows may ask

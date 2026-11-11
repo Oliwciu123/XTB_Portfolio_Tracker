@@ -25,3 +25,4 @@ packaging/*.toc
 packaging/*.pkg
 packaging/warn-*.txt
 packaging/xref-*.html
+*.lnk

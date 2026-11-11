@@ -10,7 +10,31 @@ from xtb_analyzer.benchmark import instrument_currency
 from xtb_analyzer.fx import convert_value, fetch_fx_rates
 from xtb_analyzer.models import Account, Position, Transaction
 from xtb_analyzer.positions import apply_transaction
-from xtb_analyzer.prices import fetch_prices, xtb_to_yahoo
+from xtb_analyzer.prices import fetch_prices, warsaw_today, xtb_to_yahoo
+
+_KNOWN_QUOTE_CURRENCIES = {
+    "US": "USD",
+    "PL": "PLN",
+    "WA": "PLN",
+    "DE": "EUR",
+    "NL": "EUR",
+    "AS": "EUR",
+    "FR": "EUR",
+    "PA": "EUR",
+    "ES": "EUR",
+    "MC": "EUR",
+    "IT": "EUR",
+    "MI": "EUR",
+    "BE": "EUR",
+    "BR": "EUR",
+    "PT": "EUR",
+    "LS": "EUR",
+    "FI": "EUR",
+    "HE": "EUR",
+    "AT": "EUR",
+    "VI": "EUR",
+    "IE": "EUR",
+}
 
 
 def _quote_to_account(
@@ -20,10 +44,10 @@ def _quote_to_account(
     fx_row: pd.Series,
     quote_currencies: dict[str, str] | None = None,
 ) -> float:
-    known = {"US": "USD", "DE": "EUR", "PL": "PLN", "WA": "PLN"}
+    suffix = symbol.rsplit(".", 1)[-1].upper() if "." in symbol else ""
     quote_currency = (
         (quote_currencies or {}).get(symbol)
-        or known.get(symbol.rsplit(".", 1)[-1])
+        or _KNOWN_QUOTE_CURRENCIES.get(suffix)
         or instrument_currency(xtb_to_yahoo(symbol))
     )
     if quote_currency not in ("PLN", "USD", "EUR"):
@@ -69,7 +93,7 @@ def build_nav_series(
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
 
     start = transactions[0].timestamp.date().isoformat()
-    end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
+    end = (warsaw_today() + pd.Timedelta(days=1)).date().isoformat()
 
     symbols = sorted({tx.symbol for tx in transactions if tx.symbol})
     if prices is None:

@@ -103,8 +103,8 @@ years (including current year-to-date estimates):
 
 ## Data and refresh
 
-Historical and current prices can be stale or revised. A ten-second desktop
-polling interval is not a promise of a fresh trade every ten seconds. Standalone
+Historical and current prices can be stale or revised. A five-second desktop
+polling interval is not a promise of a fresh trade every five seconds. Standalone
 HTML reports show their saved snapshot; the desktop bridge enables refresh and
 custom benchmark downloads. The offline demo uses fictional quotes, FX and indices
 and disables live fetching. Plotly.js is embedded, with no CDN requirement.

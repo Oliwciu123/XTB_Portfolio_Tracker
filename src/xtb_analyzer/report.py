@@ -11,8 +11,10 @@ import html as html_lib
 import json
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from datetime import datetime
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -139,7 +141,7 @@ def build_custom_benchmark_payload(
     )
     if sim_series.dropna().empty:
         raise ValueError(
-            f"Historia '{raw}' does not cover the full portfolio period, or FX rates are missing."
+            f"History for '{raw}' does not cover the full portfolio period, or FX rates are missing."
         )
 
     comp = prepare_return_comparison_data(nav, {key: sim_series}, currency=currency)
@@ -369,7 +371,13 @@ def _fig_html(fig: go.Figure, plot_id: str | None = None) -> str:
 def _chart(fig: go.Figure, extra_class: str = "", plot_id: str | None = None) -> str:
     cls = f"chart {extra_class}".strip()
     controls = ""
+    zoom_cue = ""
     if plot_id:
+        zoom_cue = (
+            "<span class='chart-zoom-cue' data-zoom-cue aria-live='polite'>"
+            "Click chart to enable wheel zoom"
+            "</span>"
+        )
         if plot_id in ("chart-nav", "chart-benchmark"):
             controls += (
                 "<div class='chart-ranges' role='group' aria-label='Time range'>"
@@ -395,10 +403,15 @@ def _chart(fig: go.Figure, extra_class: str = "", plot_id: str | None = None) ->
             controls += "<button type='button' data-chart-reset>Reset view</button>"
         controls += "<button type='button' data-chart-export>Save PNG</button></div>"
         controls = f"<div class='chart-controls' data-chart-target='{plot_id}'>{controls}</div>"
-    return f"<div class='{cls}'>{_chart_heading(fig)}{controls}{_fig_html(fig, plot_id)}</div>"
+    return f"<div class='{cls}' data-chart-box='{plot_id or ''}'>{zoom_cue}{_chart_heading(fig)}{controls}{_fig_html(fig, plot_id)}</div>"
 
 
-def _table_html(frame: pd.DataFrame, float_decimals: int = 2, table_id: str = "") -> str:
+def _table_html(
+    frame: pd.DataFrame,
+    float_decimals: int = 2,
+    table_id: str = "",
+    preview_limit: int = 10,
+) -> str:
     if frame.empty:
         return "<p class='muted'>No data available.</p>"
     formatted = frame.copy()
@@ -409,7 +422,10 @@ def _table_html(frame: pd.DataFrame, float_decimals: int = 2, table_id: str = ""
     table = formatted.to_html(index=False, classes="data", border=0, escape=True, na_rep="—")
     if id_attr:
         table = table.replace("<table ", f"<table{id_attr} ", 1)
-    return f"<div class='table-wrap'>{table}</div>"
+    limit_attr = (
+        f" data-preview-limit='{preview_limit}'" if preview_limit > 0 else " data-no-collapse='1'"
+    )
+    return f"<div class='table-wrap'{limit_attr}>{table}</div>"
 
 
 def _tone(value: float | None) -> str:
@@ -748,7 +764,6 @@ def _deposits_payload(data: ReportData) -> dict[str, object]:
             "amount_foreign": round(float(r["amount_foreign"]), 2),
             "amount": round(float(r["amount"]), 2),
             "xtb_rate": round(float(r["xtb_rate"]), 6),
-            "comment": str(r["comment"] or ""),
         }
         for _, r in ops.iterrows()
     ]
@@ -842,7 +857,7 @@ def _deposits_section_html(data: ReportData) -> str:
                 f"</tr>"
             )
         top10_html = (
-            "<div class='table-wrap'><table class='data' id='deposits-top10-table'>"
+            "<div class='table-wrap' data-no-collapse='1'><table class='data' id='deposits-top10-table'>"
             "<thead><tr><th>Rank</th><th>Month</th><th>Deposits</th>"
             f"<th>Total ({curr})</th><th>Share</th></tr></thead>"
             f"<tbody>{top10_rows_html}</tbody></table></div>"
@@ -860,7 +875,6 @@ def _deposits_section_html(data: ReportData) -> str:
             amt_for = _fmt_num(float(r["amount_foreign"]))
             amt_rep = _fmt_num(float(r["amount"]))
             rate_str = _fmt_num(float(r["xtb_rate"]), 4)
-            comm_txt = html_lib.escape(str(r["comment"] or "Direct deposit"))
             ops_rows.append(
                 f"<tr>"
                 f"<td>{dt_str}</td>"
@@ -868,13 +882,12 @@ def _deposits_section_html(data: ReportData) -> str:
                 f"<td>{amt_for} {acc_curr}</td>"
                 f"<td>{rate_str}</td>"
                 f"<td><b>{amt_rep} {curr}</b></td>"
-                f"<td class='muted-cell'>{comm_txt}</td>"
                 f"</tr>"
             )
         ops_html = (
-            "<div class='table-wrap deposits-ops-scroll'><table class='data' id='deposits-ops-table'>"
+            "<div class='table-wrap' data-preview-limit='10'><table class='data' id='deposits-ops-table'>"
             "<thead><tr><th>Date &amp; time</th><th>Account</th><th>Account amount</th>"
-            f"<th>FX rate</th><th>Amount ({curr})</th><th>Operation details</th></tr></thead>"
+            f"<th>FX rate</th><th>Amount ({curr})</th></tr></thead>"
             f"<tbody>{''.join(ops_rows)}</tbody></table></div>"
         )
 
@@ -1099,7 +1112,7 @@ def _pit38_section_html(data: ReportData) -> str:
                 f"</tr>"
             )
         fifo_html = (
-            "<div class='table-wrap'><table class='data' id='pit38-fifo-table'>"
+            "<div class='table-wrap' data-preview-limit='5'><table class='data' id='pit38-fifo-table'>"
             "<thead><tr><th>Symbol</th><th>Buy date</th><th>Sell date</th><th>Shares</th>"
             "<th>Buy cost (orig)</th><th>Buy NBP (D−1)</th><th>Acq. cost (PLN)</th>"
             "<th>Proceeds (orig)</th><th>Sell NBP (D−1)</th><th>Revenue (PLN)</th>"
@@ -1129,7 +1142,7 @@ def _pit38_section_html(data: ReportData) -> str:
                 f"</tr>"
             )
         div_html = (
-            "<div class='table-wrap'><table class='data' id='pit38-div-table'>"
+            "<div class='table-wrap' data-preview-limit='5'><table class='data' id='pit38-div-table'>"
             "<thead><tr><th>Date</th><th>Symbol</th><th>Gross (orig)</th><th>WHT paid (orig)</th>"
             "<th>WHT %</th><th>NBP rate (D−1)</th><th>Gross (PLN)</th><th>19% PL tax</th>"
             "<th>WHT credit</th><th>Tax due (Do dopłaty)</th></tr></thead>"
@@ -1178,7 +1191,7 @@ def _pit38_section_html(data: ReportData) -> str:
     )
 
 
-def _metric_popover_html() -> str:
+def _metric_popover_html(generated: str, data_notice: str) -> str:
     return (
         "<div id='metric-backdrop' class='metric-backdrop' hidden></div>"
         "<div id='metric-popover' class='metric-popover' role='dialog' aria-modal='false' "
@@ -1205,62 +1218,130 @@ def _metric_popover_html() -> str:
         "<div id='metric-popover-ranges' class='metric-ranges-list'></div>"
         "</div>"
         "</div>"
+        "<div id='about-popover' class='metric-popover about-popover' role='dialog' "
+        "aria-modal='false' aria-labelledby='about-popover-title' tabindex='-1' hidden>"
+        "<div class='metric-popover-header'>"
+        "<div>"
+        "<div class='metric-popover-eyebrow'>Report metadata</div>"
+        "<h4 id='about-popover-title' class='metric-popover-title'>XTB Portfolio Analyzer v1.2.0</h4>"
+        "</div>"
+        "<button type='button' id='about-popover-close' class='metric-popover-close' "
+        "aria-label='Close about dialog'>×</button>"
+        "</div>"
+        "<div class='metric-popover-section'>"
+        "<div class='metric-popover-kicker'>Last generated (Poland)</div>"
+        f"<p id='live-generated'>{html_lib.escape(generated)}</p>"
+        "</div>"
+        "<div class='metric-popover-section'>"
+        "<div class='metric-popover-kicker'>Data sources</div>"
+        f"<p id='about-data-notice'>{html_lib.escape(data_notice)}</p>"
+        "</div>"
+        "<div class='metric-popover-section metric-popover-example-box'>"
+        "<div class='metric-popover-kicker'>Disclaimer</div>"
+        "<p>For educational portfolio analysis only; not investment, legal, or tax advice.</p>"
+        "</div>"
+        "</div>"
+        "<div id='chart-hover-card' class='chart-hover-card' hidden aria-hidden='true'></div>"
     )
 
 
 _DESIGN_CSS = """
-:root { --bg:#0b1221; --surface:#101e33; --card:#15253e; --border:#263c59; --accent:#818cf8; --accent-light:#a5b4fc; }
-body { background:radial-gradient(ellipse at 10% 0%,#182d49 0%,transparent 45%),var(--bg); }
-.hero-title-group h1 { letter-spacing:-1.3px; }
-.panel-block { background:#101e33; border:1px solid #263c59; border-radius:22px; padding:26px; margin-top:24px; }
-.panel-block h2 { color:#c7d2fe; }
+:root {
+  --bg:#090f1d;
+  --surface:#0e182a;
+  --card:#121f36;
+  --card-hover:#172844;
+  --card-inner:#0a1322;
+  --border:#223452;
+  --border-strong:#36507a;
+  --accent:#6366f1;
+  --accent-light:#93c5fd;
+}
+body {
+  background:
+    radial-gradient(ellipse 80% 45% at 15% -8%, rgba(56, 189, 248, 0.12) 0%, transparent 55%),
+    radial-gradient(ellipse 70% 40% at 85% 0%, rgba(99, 102, 241, 0.11) 0%, transparent 50%),
+    var(--bg);
+}
+.hero-title-group h1 { letter-spacing:-0.03em; }
+.panel-block {
+  background:linear-gradient(180deg, rgba(18, 31, 54, 0.92) 0%, rgba(13, 23, 41, 0.96) 100%);
+  border:1px solid var(--border);
+  border-radius:20px;
+  padding:24px 26px;
+  margin-top:22px;
+  box-shadow:inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 14px 32px -16px rgba(2, 6, 23, 0.72);
+}
+.panel-block h2 { color:#e0e7ff; letter-spacing:-0.02em; }
 .nav-cloud:nth-child(1) { border-top:3px solid #34d399; }
 .nav-cloud:nth-child(2) { border-top:3px solid #38bdf8; }
 .nav-cloud:nth-child(3) { border-top:3px solid #a78bfa; }
 .nav-cloud:nth-child(4) { border-top:3px solid #f472b6; }
 .nav-cloud:nth-child(5) { border-top:3px solid #fbbf24; }
 .nav-cloud:nth-child(6) { border-top:3px solid #fb7185; }
-.nav-cloud.active { background:#233456; border-color:#818cf8; }
-.stat { border-radius:16px; border:1px solid #2b405d; }
-.kpi .stat:nth-child(1) { background:#163b39; }
-.kpi .stat:nth-child(2) { background:#203e60; }
-.kpi .stat:nth-child(3) { background:#34305a; }
-.kpi .stat:nth-child(4) { background:#3d3441; }
-.chart { border-radius:16px; background:#101e33; }
-.search-input:focus { outline:2px solid #a78bfa; outline-offset:3px; }
-button:focus-visible,a:focus-visible { outline:2px solid #38bdf8; outline-offset:4px; }
+.nav-cloud.active {
+  background:linear-gradient(180deg, rgba(99, 102, 241, 0.22) 0%, rgba(22, 36, 62, 0.98) 100%);
+  border-color:#818cf8;
+  box-shadow:0 12px 28px -10px rgba(99, 102, 241, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.stat {
+  border-radius:16px;
+  border:1px solid #243858;
+  background:linear-gradient(180deg, rgba(24, 39, 68, 0.88) 0%, rgba(16, 27, 48, 0.95) 100%);
+  box-shadow:inset 0 1px 0 rgba(255, 255, 255, 0.045), 0 8px 20px -12px rgba(2, 6, 23, 0.65);
+}
+.kpi .stat:nth-child(1) { border-top:2.5px solid #34d399; background:linear-gradient(180deg, rgba(16, 66, 60, 0.55) 0%, rgba(16, 29, 49, 0.95) 100%); }
+.kpi .stat:nth-child(2) { border-top:2.5px solid #38bdf8; background:linear-gradient(180deg, rgba(22, 58, 92, 0.55) 0%, rgba(16, 29, 49, 0.95) 100%); }
+.kpi .stat:nth-child(3) { border-top:2.5px solid #818cf8; background:linear-gradient(180deg, rgba(44, 45, 92, 0.55) 0%, rgba(16, 29, 49, 0.95) 100%); }
+.kpi .stat:nth-child(4) { border-top:2.5px solid #c084fc; background:linear-gradient(180deg, rgba(58, 39, 86, 0.52) 0%, rgba(16, 29, 49, 0.95) 100%); }
+.kpi .stat:nth-child(5) { border-top:2.5px solid #fbbf24; background:linear-gradient(180deg, rgba(68, 52, 28, 0.48) 0%, rgba(16, 29, 49, 0.95) 100%); }
+.kpi .stat:nth-child(6) { border-top:2.5px solid #22d3ee; background:linear-gradient(180deg, rgba(18, 60, 76, 0.52) 0%, rgba(16, 29, 49, 0.95) 100%); }
+.chart {
+  position:relative;
+  border-radius:16px;
+  background:#0d1729;
+  border:1px solid #213350;
+  box-shadow:inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  transition:border-color 0.2s ease, box-shadow 0.2s ease;
+}
+.chart.is-zoom-active {
+  border-color:rgba(56, 189, 248, 0.78);
+  box-shadow:0 0 0 1px rgba(56, 189, 248, 0.28), 0 16px 36px -14px rgba(14, 165, 233, 0.35);
+}
+.search-input:focus { outline:2px solid #818cf8; outline-offset:2px; }
+button:focus-visible,a:focus-visible { outline:2px solid #38bdf8; outline-offset:3px; }
 .bench-feedback { min-height:24px; color:#c4b5fd; }
-.js-plotly-plot .plotly .modebar { background:#15253e!important; border-radius:8px; }
 .js-plotly-plot .plotly .modebar { display:none!important; }
-.chart-heading { padding:22px 24px 4px; text-align:left; }
-.chart-heading h3 { margin:0; font-size:17px; line-height:1.5; color:#e2e8f0; overflow-wrap:anywhere; }
-.chart-heading p { margin:6px 0 0; color:#94a3b8; font-size:12px; line-height:1.8; overflow-wrap:anywhere; }
-.chart-controls { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:12px 24px; }
-.chart-ranges,.chart-actions { display:flex; flex-wrap:wrap; gap:6px; }
-.chart-controls button { font:inherit; font-size:12px; cursor:pointer; border:1px solid transparent; border-radius:8px; padding:7px 12px; background:#172840; color:#a7b8d1; }
-.chart-controls button:hover,.chart-controls button.active { background:#293c60; color:#e0e7ff; border-color:#52638f; }
+.chart-heading { padding:20px 24px 4px; text-align:left; padding-right:210px; }
+.chart-heading h3 { margin:0; font-size:17px; line-height:1.45; color:#f1f5f9; overflow-wrap:anywhere; }
+.chart-heading p { margin:5px 0 0; color:#94a3b8; font-size:12.5px; line-height:1.7; overflow-wrap:anywhere; }
+.chart-controls { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:10px 24px 12px; }
+.chart-ranges { display:inline-flex; flex-wrap:wrap; gap:3px; background:#091220; border:1px solid #1e304c; border-radius:10px; padding:3px; }
+.chart-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.chart-controls button { font:inherit; font-size:12px; font-weight:600; cursor:pointer; border:1px solid transparent; border-radius:7px; padding:6px 11px; background:transparent; color:#94a3b8; transition:all 0.15s ease; }
+.chart-actions button { background:#15253f; border-color:#263b5d; color:#cbd5e1; border-radius:8px; padding:6px 12px; }
+.chart-controls button:hover,.chart-controls button.active { background:#253b63; color:#f8fafc; border-color:#4f6a9a; }
 @media(max-width:700px) { .chart-heading { padding:16px 12px 4px; } .chart-controls { padding:10px 12px; } .chart-actions { margin-left:auto; } }
-@media(max-width:700px) { .panel-block { padding:12px; border-radius:16px; } .container { padding:0 12px 32px; } }
+@media(max-width:700px) { .panel-block { padding:14px; border-radius:16px; } .container { padding:0 12px 32px; } }
 @media(prefers-reduced-motion:reduce) { *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; } }
 @media(min-width:1100px) {
-  .container { max-width:1520px; padding:0 28px 60px; }
-  header.hero { flex-direction:row; justify-content:space-between; text-align:left; padding:14px 0; gap:16px; }
+  .container { max-width:1520px; padding:0 28px 56px; }
+  header.hero { flex-direction:row; justify-content:space-between; text-align:left; padding:18px 0 16px; gap:16px; }
   .hero-title-group { align-items:flex-start; }
   .hero-title-group h1 { font-size:28px; text-align:left; margin-bottom:4px; }
-  .hero-meta { font-size:12px; justify-content:flex-start; }
-  .section-switcher-wrap { margin:10px 0 14px; }
-  .switcher-header { margin-bottom:6px; }
-  .view-mode-btn { padding:4px 10px; }
-  .nav-cloud { padding:8px 16px; gap:2px; }
-  .cloud-top { display:none; }
-  .cloud-title { font-size:16px; }
-  .panel-block { padding:16px 20px; margin:16px 0; }
-  .panel-block h2 { font-size:18px; }
-  .section-desc { margin-bottom:8px; font-size:12px; }
-  .stat-grid.kpi { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:10px; margin:10px 0 0; }
-  .stat-grid.kpi .stat { min-width:0; max-width:none; padding:12px 8px; }
-  .kpi .stat-value { font-size:18px; }
-  .kpi .stat-label,.kpi .stat-sub { font-size:11px; }
+  .hero-meta { font-size:12.5px; justify-content:flex-start; }
+  .section-switcher-wrap { margin:14px 0 18px; }
+  .switcher-header { margin-bottom:10px; }
+  .view-mode-btn { padding:6px 13px; }
+  .nav-cloud { padding:18px 22px; min-height:86px; gap:8px; }
+  .cloud-title { font-size:19px; }
+  .panel-block { padding:18px 22px; margin:16px 0; }
+  .panel-block h2 { font-size:18.5px; }
+  .section-desc { margin-bottom:10px; font-size:12.5px; }
+  .stat-grid.kpi { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:11px; margin:10px 0 0; }
+  .stat-grid.kpi .stat { min-width:0; max-width:none; padding:13px 10px; }
+  .kpi .stat-value { font-size:18.5px; }
+  .kpi .stat-label,.kpi .stat-sub { font-size:11.5px; }
 }
 """
 
@@ -1468,7 +1549,7 @@ header.hero {
 .nav-clouds {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
-  gap: 12px;
+  gap: 14px;
 }
 @media (max-width: 1180px) {
   .nav-clouds { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -1478,11 +1559,13 @@ header.hero {
 }
 .nav-cloud {
   appearance: none;
+  position: relative;
   text-align: left;
-  background: var(--card);
+  background: linear-gradient(180deg, rgba(24, 38, 66, 0.9) 0%, rgba(15, 25, 44, 0.96) 100%);
   border: 1px solid var(--border);
   border-radius: 16px;
-  padding: 18px 20px;
+  padding: 16px 20px;
+  min-height: 76px;
   color: var(--text);
   font-family: inherit;
   cursor: pointer;
@@ -1490,17 +1573,25 @@ header.hero {
   flex-direction: column;
   justify-content: center;
   gap: 6px;
-  transition: transform 0.16s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.16s ease, background 0.16s ease;
+  transform-origin: center center;
+  will-change: transform;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 6px 16px -10px rgba(2, 6, 23, 0.65);
+  transition: transform 0.22s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.22s cubic-bezier(0.22, 1, 0.36, 1), border-color 0.18s ease, background 0.18s ease;
 }
 .nav-cloud:hover {
-  transform: translateY(-2px);
-  border-color: var(--border-strong);
-  background: var(--card-hover);
+  transform: translateY(-4px) scale(1.055);
+  border-color: #60a5fa;
+  background: linear-gradient(180deg, rgba(56, 189, 248, 0.2) 0%, rgba(23, 39, 68, 0.98) 100%);
+  box-shadow: 0 18px 36px -10px rgba(2, 6, 23, 0.86), 0 0 0 1.5px rgba(96, 165, 250, 0.45);
+  z-index: 4;
 }
 .nav-cloud.active {
-  background: linear-gradient(180deg, rgba(59, 130, 246, 0.16) 0%, rgba(21, 29, 46, 0.95) 100%);
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.22) 0%, rgba(21, 35, 60, 0.98) 100%);
   border-color: var(--accent-light);
-  box-shadow: 0 8px 24px -8px rgba(59, 130, 246, 0.35);
+  box-shadow: 0 10px 26px -8px rgba(99, 102, 241, 0.4), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+.nav-cloud.active:hover {
+  transform: translateY(-4px) scale(1.055);
 }
 .cloud-top {
   display: flex;
@@ -1510,23 +1601,24 @@ header.hero {
 }
 .cloud-step {
   font-family: 'JetBrains Mono', monospace;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 11.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
   color: var(--accent-light);
 }
 .cloud-arrow {
   font-size: 14px;
   color: var(--muted);
-  transition: transform 0.16s ease, color 0.16s ease;
+  transition: transform 0.2s cubic-bezier(0.22, 1, 0.36, 1), color 0.18s ease;
 }
 .nav-cloud.active .cloud-arrow, .nav-cloud:hover .cloud-arrow {
-  transform: translateX(3px);
-  color: var(--accent-light);
+  transform: translateX(4px);
+  color: #f8fafc;
 }
 .cloud-title {
-  font-size: 17px;
+  font-size: 17.5px;
   font-weight: 700;
-  letter-spacing: -0.01em;
+  letter-spacing: -0.015em;
   color: var(--text);
 }
 
@@ -1964,15 +2056,335 @@ td.live-updated { animation: cellFlash 1.1s ease-out; }
   color: #ffffff;
 }
 .metric-popover-formula {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11.5px;
-  color: #c7d2fe;
-  background: rgba(15, 23, 42, 0.72);
-  border: 1px solid rgba(99, 102, 241, 0.28);
-  border-radius: 8px;
-  padding: 7px 10px;
+  background: linear-gradient(180deg, rgba(9, 16, 30, 0.92) 0%, rgba(13, 23, 42, 0.88) 100%);
+  border: 1px solid rgba(99, 102, 241, 0.34);
+  border-radius: 11px;
+  padding: 13px 14px;
   margin-bottom: 12px;
-  overflow-wrap: anywhere;
+  text-align: center;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.m-expr {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.28em;
+  font-family: 'Cambria Math', 'STIX Two Math', Georgia, 'Times New Roman', serif;
+  font-size: 15.5px;
+  line-height: 1.25;
+  color: #f8fafc;
+  white-space: nowrap;
+}
+.m-rm {
+  font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-style: normal;
+  font-weight: 600;
+  font-size: 0.88em;
+  letter-spacing: -0.01em;
+  color: #e2e8f0;
+}
+.m-var {
+  font-style: italic;
+  font-weight: 500;
+  color: #bfdbfe;
+}
+.m-bar-over {
+  display: inline-block;
+  border-top: 1.4px solid currentColor;
+  line-height: 1.02;
+  padding-top: 1px;
+}
+.m-expr sub, .m-expr sup {
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.68em;
+  font-style: normal;
+  font-weight: 600;
+  color: #93c5fd;
+  line-height: 0;
+}
+.m-frac {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  margin: 0 0.2em;
+  line-height: 1.15;
+}
+.m-num {
+  padding: 0 0.34em 3px;
+  border-bottom: 1.5px solid rgba(147, 197, 253, 0.85);
+  width: 100%;
+  text-align: center;
+}
+.m-den {
+  padding: 3px 0.34em 0;
+  width: 100%;
+  text-align: center;
+}
+.m-sqrt {
+  display: inline-flex;
+  align-items: stretch;
+  vertical-align: middle;
+  margin: 0 0.1em;
+  color: #93c5fd;
+}
+.m-sqrt-sym {
+  width: 0.72em;
+  min-height: 1.28em;
+  flex-shrink: 0;
+  display: block;
+}
+.m-sqrt-body {
+  border-top: 1.5px solid rgba(147, 197, 253, 0.92);
+  padding: 3px 0.28em 1px 0.16em;
+  color: #f8fafc;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2em;
+}
+.m-bigop {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  line-height: 1;
+  margin: 0 0.16em;
+}
+.m-op-glyph {
+  font-size: 1.42em;
+  line-height: 1;
+  color: #93c5fd;
+  font-style: normal;
+}
+.m-lim-sup, .m-lim-sub {
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.64em;
+  font-weight: 600;
+  color: #94a3b8;
+  line-height: 1.12;
+  font-style: normal;
+}
+.m-lim-empty {
+  height: 0.2em;
+}
+.m-underop {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  vertical-align: middle;
+  line-height: 1.05;
+  margin: 0 0.14em;
+}
+.m-op-word {
+  font-family: 'Plus Jakarta Sans', -apple-system, sans-serif;
+  font-size: 0.86em;
+  font-weight: 700;
+  color: #93c5fd;
+  font-style: normal;
+}
+.m-abs {
+  display: inline-flex;
+  align-items: center;
+  border-left: 1.5px solid #93c5fd;
+  border-right: 1.5px solid #93c5fd;
+  padding: 0 0.24em;
+  margin: 0 0.1em;
+}
+.m-delim {
+  color: #94a3b8;
+  font-weight: 400;
+  font-size: 1.1em;
+  font-style: normal;
+}
+.m-rel, .m-bin {
+  color: #93c5fd;
+  margin: 0 0.18em;
+  font-style: normal;
+}
+
+/* Click-to-Zoom Cue, Modern Hover Readout Card, Collapsible Tables, and About Button */
+.about-trigger {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 9px 13px;
+  font-size: 12.5px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.about-trigger:hover,
+.about-trigger[aria-expanded="true"] {
+  color: var(--text);
+  border-color: var(--accent-light);
+  background: rgba(99, 102, 241, 0.14);
+}
+.chart-zoom-cue {
+  position: absolute;
+  top: 14px;
+  right: 18px;
+  z-index: 6;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.78);
+  border: 1px solid rgba(100, 116, 139, 0.35);
+  color: #94a3b8;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-2px);
+  transition: opacity 0.18s ease, transform 0.18s ease, background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
+}
+.chart:hover .chart-zoom-cue {
+  opacity: 0.88;
+  transform: translateY(0);
+}
+.chart.is-zoom-active .chart-zoom-cue {
+  opacity: 1;
+  transform: translateY(0);
+  background: rgba(14, 165, 233, 0.18);
+  border-color: rgba(56, 189, 248, 0.65);
+  color: #e0f2fe;
+}
+@media (max-width: 700px) {
+  .chart-zoom-cue { display: none; }
+}
+#chart-benchmark .hoverlayer g.hovertext,
+#chart-nav .hoverlayer g.hovertext {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+.chart-hover-card {
+  position: fixed;
+  z-index: 1160;
+  pointer-events: none;
+  min-width: 256px;
+  max-width: 348px;
+  background: rgba(10, 17, 32, 0.95);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(100, 116, 139, 0.45);
+  border-radius: 13px;
+  padding: 11px 14px;
+  box-shadow: 0 20px 42px rgba(2, 6, 23, 0.82), inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  color: #f1f5f9;
+}
+.chc-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 7px;
+  margin-bottom: 7px;
+  border-bottom: 1px solid rgba(51, 65, 85, 0.85);
+}
+.chc-date {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #f8fafc;
+}
+.chc-badge {
+  font-size: 10.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #93c5fd;
+}
+.chc-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.chc-row {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  font-size: 12.5px;
+  line-height: 1.35;
+}
+.chc-row.is-portfolio {
+  background: rgba(52, 211, 153, 0.08);
+  margin: 0 -6px;
+  padding: 3px 6px;
+  border-radius: 6px;
+}
+.chc-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.chc-name {
+  color: #cbd5e1;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chc-row.is-portfolio .chc-name {
+  color: #ffffff;
+  font-weight: 700;
+}
+.chc-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12.5px;
+  font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #f8fafc;
+}
+.chc-val.is-pos { color: #34d399; }
+.chc-val.is-neg { color: #f87171; }
+.table-collapse-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 16px;
+  background: rgba(10, 19, 34, 0.88);
+  border-top: 1px solid var(--border);
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.table-row-count b {
+  color: var(--text);
+  font-family: 'JetBrains Mono', monospace;
+}
+.table-expand-btn {
+  appearance: none;
+  background: rgba(99, 102, 241, 0.14);
+  border: 1px solid rgba(129, 140, 248, 0.4);
+  color: #c7d2fe;
+  border-radius: 8px;
+  padding: 5px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+}
+.table-expand-btn:hover {
+  background: rgba(99, 102, 241, 0.28);
+  border-color: #a5b4fc;
+  color: #ffffff;
+}
+table.data th[data-sort-dir="asc"]::after {
+  content: " ↑";
+  color: var(--accent-light);
+}
+table.data th[data-sort-dir="desc"]::after {
+  content: " ↓";
+  color: var(--accent-light);
 }
 .metric-popover-section {
   margin-top: 10px;
@@ -2124,22 +2536,24 @@ td.muted-cell {
 """
 
 
-def _now_utc() -> pd.Timestamp:
-    """Current report-generation timestamp in UTC."""
-    return pd.Timestamp.now(tz="UTC")
+def _now_warsaw() -> datetime:
+    """Current report-generation timestamp in Polish local time (Europe/Warsaw, DST-safe)."""
+    return datetime.now(ZoneInfo("Europe/Warsaw"))
 
 
 def build_live_payload(
     data: ReportData, custom_tickers: list[str] | None = None
 ) -> dict[str, object]:
     """Build live HTML fragments and metadata for in-place DOM updates."""
-    now_ts = _now_utc()
-    now_str = now_ts.strftime("%H:%M:%S")
-    generated_str = now_ts.strftime("%Y-%m-%d %H:%M:%S")
+    now_ts = _now_warsaw()
+    tz_abbr = now_ts.tzname() or "CET"
+    now_str = f"{now_ts.strftime('%H:%M:%S')} {tz_abbr}"
+    generated_str = f"{now_ts.strftime('%Y-%m-%d %H:%M:%S')} {tz_abbr}"
     figures = report_figures(data)
     return {
         "currency": data.currency,
         "as_of": f"{data.measures.as_of} ({now_str})",
+        "time_label": now_str,
         "period_days": f"{data.measures.period_days} days",
         "generated": generated_str,
         "charts": {
@@ -2183,7 +2597,7 @@ _LIVE_SCRIPT = """
   const METRIC_DEFINITIONS = __METRIC_DEFINITIONS_JSON__;
   const DEPOSITS_DATA = __DEPOSITS_JSON__;
   const PIT38_DATA = __PIT38_JSON__;
-  const POLL_INTERVAL_MS = 10000;
+  const POLL_INTERVAL_MS = 5000;
   const EXTRA_COLORS = ['#f472b6', '#a3e635', '#fb923c', '#818cf8', '#2dd4bf', '#e879f9', '#38bdf8', '#facc15'];
   let extraColorIdx = 0;
   let liveEnabled = !IS_DEMO;
@@ -2191,6 +2605,14 @@ _LIVE_SCRIPT = """
   let currentCompanyFilter = 'all';
   let currentCompanySearch = '';
   const addedCustomKeys = new Set();
+  const expandedTableState = new Map();
+  let activeZoomChart = null;
+  let lastPointer = { x: 0, y: 0 };
+
+  function hideHoverCard() {
+    const card = document.getElementById('chart-hover-card');
+    if (card) card.hidden = true;
+  }
 
   function resizeVisiblePlots(scope) {
     if (!window.Plotly) return;
@@ -2203,7 +2625,133 @@ _LIVE_SCRIPT = """
     });
   }
 
+  function getTableStateKey(wrap) {
+    const tbl = wrap.querySelector('table.data');
+    if (tbl && tbl.id) return tbl.id;
+    const parentWithId = wrap.parentElement && wrap.parentElement.id ? wrap.parentElement.id : '';
+    return parentWithId || 'table-default';
+  }
+
+  function refreshTablePagination(wrap) {
+    if (!wrap || wrap.getAttribute('data-no-collapse') === '1') return;
+    const table = wrap.querySelector('table.data');
+    const tbody = table ? table.querySelector('tbody') : null;
+    if (!tbody) return;
+    const limit = parseInt(wrap.getAttribute('data-preview-limit') || '10', 10);
+    if (!limit || limit <= 0) return;
+
+    const key = getTableStateKey(wrap);
+    const isExpanded = Boolean(expandedTableState.get(key));
+    const allRows = Array.from(tbody.querySelectorAll('tr'));
+    const matchingRows = [];
+    allRows.forEach(function(tr) {
+      if (tr.dataset.filterHidden === '1') {
+        tr.style.display = 'none';
+      } else {
+        matchingRows.push(tr);
+      }
+    });
+
+    matchingRows.forEach(function(tr, idx) {
+      tr.style.display = (!isExpanded && idx >= limit) ? 'none' : '';
+    });
+
+    let bar = wrap.querySelector('.table-collapse-bar');
+    if (matchingRows.length <= limit && allRows.length <= limit) {
+      if (bar) bar.remove();
+      return;
+    }
+    if (!bar) {
+      bar = document.createElement('div');
+      bar.className = 'table-collapse-bar';
+      wrap.appendChild(bar);
+    }
+
+    const shownCount = isExpanded ? matchingRows.length : Math.min(limit, matchingRows.length);
+    const countHtml = matchingRows.length === 0
+      ? '<span class="table-row-count"><b>0</b> matching rows</span>'
+      : (isExpanded || matchingRows.length <= limit)
+        ? '<span class="table-row-count">Showing all <b>' + matchingRows.length + '</b> rows</span>'
+        : '<span class="table-row-count">Showing <b>' + shownCount + '</b> of <b>' + matchingRows.length + '</b> rows</span>';
+
+    const btnHtml = matchingRows.length > limit
+      ? (
+        '<button type="button" class="table-expand-btn" data-table-expand="' + key + '" aria-expanded="' + (isExpanded ? 'true' : 'false') + '">' +
+        (isExpanded ? ('Collapse to ' + limit + ' rows ▲') : ('Show all ' + matchingRows.length + ' rows ▼')) +
+        '</button>'
+      )
+      : '';
+
+    bar.innerHTML = countHtml + btnHtml;
+    const btn = bar.querySelector('.table-expand-btn');
+    if (btn) {
+      btn.addEventListener('click', function() {
+        expandedTableState.set(key, !expandedTableState.get(key));
+        refreshTablePagination(wrap);
+      });
+    }
+  }
+
+  function setupCollapsibleTables(root) {
+    const scope = root || document;
+    if (scope.classList && scope.classList.contains('table-wrap')) {
+      refreshTablePagination(scope);
+      return;
+    }
+    scope.querySelectorAll('.table-wrap').forEach(refreshTablePagination);
+  }
+
+  function setChartZoomState(chartBox, active) {
+    if (!chartBox) return;
+    const gd = chartBox.querySelector('.js-plotly-plot');
+    const cue = chartBox.querySelector('[data-zoom-cue]');
+    chartBox.classList.toggle('is-zoom-active', Boolean(active));
+    if (cue) {
+      cue.textContent = active
+        ? 'Wheel zoom active · Esc to exit'
+        : 'Click chart to enable wheel zoom';
+    }
+    if (!gd || !window.Plotly || !gd._fullLayout) return;
+
+    if (!gd.__initialAxisState) {
+      gd.__initialAxisState = {
+        dragmode: gd.layout ? gd.layout.dragmode : false,
+        xFixed: Boolean(gd.layout && gd.layout.xaxis && gd.layout.xaxis.fixedrange),
+        yFixed: Boolean(gd.layout && gd.layout.yaxis && gd.layout.yaxis.fixedrange)
+      };
+    }
+    const isPie = Array.isArray(gd.data) && gd.data.some(function(t) { return t && t.type === 'pie'; });
+    const nextCtx = Object.assign({}, gd._context || {}, { scrollZoom: Boolean(active) });
+    gd._context = nextCtx;
+    if (isPie) return;
+
+    const init = gd.__initialAxisState;
+    const nextX = Object.assign({}, (gd.layout && gd.layout.xaxis) || {}, {
+      fixedrange: active ? false : init.xFixed
+    });
+    const nextY = Object.assign({}, (gd.layout && gd.layout.yaxis) || {}, {
+      fixedrange: active ? false : init.yFixed
+    });
+    const nextLayout = Object.assign({}, gd.layout || {}, {
+      width: null,
+      autosize: true,
+      dragmode: active ? (init.dragmode || 'zoom') : init.dragmode,
+      xaxis: nextX,
+      yaxis: nextY
+    });
+    window.Plotly.react(gd, gd.data, nextLayout, nextCtx);
+  }
+
+  function deactivateActiveChart() {
+    if (!activeZoomChart) return;
+    const prev = activeZoomChart;
+    activeZoomChart = null;
+    setChartZoomState(prev, false);
+  }
+
   function activateSection(sectionId) {
+    hideHoverCard();
+    deactivateActiveChart();
     document.body.classList.remove('show-all-sections');
     const showAllBtn = document.getElementById('btn-show-all');
     if (showAllBtn) showAllBtn.classList.remove('active');
@@ -2228,6 +2776,8 @@ _LIVE_SCRIPT = """
   }
 
   function toggleShowAll() {
+    hideHoverCard();
+    deactivateActiveChart();
     const showingAll = document.body.classList.toggle('show-all-sections');
     const showAllBtn = document.getElementById('btn-show-all');
     if (showAllBtn) showAllBtn.classList.toggle('active', showingAll);
@@ -2272,8 +2822,9 @@ _LIVE_SCRIPT = """
       else if (currentCompanyFilter === 'closed') matchFilter = status.includes('closed');
 
       const matchQuery = !query || symbol.includes(query) || status.includes(query);
-      tr.style.display = (matchFilter && matchQuery) ? '' : 'none';
+      tr.dataset.filterHidden = (matchFilter && matchQuery) ? '0' : '1';
     });
+    setupCollapsibleTables(container);
   }
 
   function enableTableSorting(root) {
@@ -2289,6 +2840,7 @@ _LIVE_SCRIPT = """
           if (!tbody) return;
           const rows = Array.from(tbody.querySelectorAll('tr'));
           const asc = th.dataset.sortDir !== 'asc';
+          headers.forEach(function(h) { if (h !== th) delete h.dataset.sortDir; });
           th.dataset.sortDir = asc ? 'asc' : 'desc';
 
           function parseVal(cellText) {
@@ -2312,6 +2864,8 @@ _LIVE_SCRIPT = """
             return asc ? String(va).localeCompare(String(vb)) : String(vb).localeCompare(String(va));
           });
           rows.forEach(function(r) { tbody.appendChild(r); });
+          const wrap = table.closest('.table-wrap');
+          if (wrap) refreshTablePagination(wrap);
         });
       });
     });
@@ -2350,9 +2904,11 @@ _LIVE_SCRIPT = """
           oldTd.classList.add('live-updated');
         }
       });
+      setupCollapsibleTables(container);
     } else {
       container.innerHTML = temp.innerHTML;
       enableTableSorting(container);
+      setupCollapsibleTables(container);
     }
   }
 
@@ -2402,7 +2958,9 @@ _LIVE_SCRIPT = """
         for (const [id, figure] of Object.entries(payload.charts || {})) {
           const gd = document.getElementById(id);
           if (!gd || !window.Plotly) continue;
-          const heading = gd.closest('.chart').querySelector('.chart-heading');
+          const chartBox = gd.closest('.chart');
+          const isZoomOn = Boolean(chartBox && chartBox.classList.contains('is-zoom-active'));
+          const heading = chartBox ? chartBox.querySelector('.chart-heading') : null;
           if (heading && payload.chart_headings && payload.chart_headings[id]) heading.outerHTML = payload.chart_headings[id];
           const traces = figure.data;
           if (id === 'chart-benchmark') {
@@ -2410,11 +2968,12 @@ _LIVE_SCRIPT = """
             figure.data.forEach((trace, i) => { if (gd.data[i]) trace.visible = gd.data[i].visible; });
             traces.push(...extra);
           }
-          await window.Plotly.react(gd, traces, Object.assign({}, figure.layout, {width: null, autosize: true}), gd._context);
+          const nextCtx = Object.assign({}, gd._context || {}, { scrollZoom: isZoomOn });
+          await window.Plotly.react(gd, traces, Object.assign({}, figure.layout, {width: null, autosize: true}), nextCtx);
         }
         for (const custom of payload.custom_benchmarks || []) {
           const btn = document.querySelector('[data-bench-key="' + custom.key + '"]');
-          if (btn) await window.Plotly.restyle('chart-benchmark', {x: [custom.x], y: [custom.y], name: custom.trace_name}, [Number(btn.dataset.benchTrace)]);
+          if (btn) await window.Plotly.restyle('chart-benchmark', {x: [custom.x], y: [custom.y], name: custom.trace_name, meta: [custom.label]}, [Number(btn.dataset.benchTrace)]);
         }
         updateContainerInPlace('live-kpi', payload.kpi_html);
         updateContainerInPlace('live-attribution', payload.attribution_html);
@@ -2430,7 +2989,7 @@ _LIVE_SCRIPT = """
         if (periodEl && payload.period_days) periodEl.textContent = payload.period_days;
         const genEl = document.getElementById('live-generated');
         if (genEl && payload.generated) genEl.textContent = payload.generated;
-        const timePart = (payload.generated || '').split(' ')[1] || '';
+        const timePart = payload.time_label || (payload.generated || '').split(' ').slice(1).join(' ');
         setLiveButtonState(timePart);
       } else {
         const text = document.getElementById('live-status-text');
@@ -2504,9 +3063,10 @@ _LIVE_SCRIPT = """
         x: data.x,
         y: data.y,
         name: data.trace_name,
+        meta: data.label,
         mode: 'lines',
         line: { color: color, width: 2.5, shape: 'linear', dash: 'solid' },
-        hovertemplate: '%{x|%b %Y}<br><b>%{y:.1f}%</b><extra></extra>',
+        hovertemplate: '<b>%{meta}</b>: <b>%{y:+.2f}%</b><extra></extra>',
         visible: true
       });
 
@@ -2533,6 +3093,153 @@ _LIVE_SCRIPT = """
   document.addEventListener('DOMContentLoaded', function() {
     decorateTableSemantics(document);
     enableTableSorting(document);
+    setupCollapsibleTables(document);
+
+    // Block accidental mouse-wheel zoom on inactive charts while allowing native page scroll
+    document.addEventListener('wheel', function(e) {
+      const chartBox = e.target.closest('.chart');
+      if (chartBox && !chartBox.classList.contains('is-zoom-active')) {
+        e.stopPropagation();
+      }
+    }, { capture: true, passive: true });
+
+    // Click inside chart activates wheel zoom; click outside deactivates
+    document.addEventListener('click', function(e) {
+      const chartBox = e.target.closest('.chart');
+      const inControls = e.target.closest('button, a, input, select, .chart-controls');
+      if (chartBox && !inControls) {
+        if (activeZoomChart !== chartBox) {
+          if (activeZoomChart) setChartZoomState(activeZoomChart, false);
+          activeZoomChart = chartBox;
+          setChartZoomState(chartBox, true);
+        }
+      } else if (activeZoomChart && (!chartBox || !inControls)) {
+        deactivateActiveChart();
+      }
+    });
+
+    // Modern custom floating hover readout for multi-series time-series charts
+    const MONTH_NAMES = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    function formatHoverDate(rawX) {
+      const d = new Date(rawX);
+      if (Number.isNaN(d.getTime())) return String(rawX || '');
+      const day = String(d.getDate()).padStart(2, '0');
+      return day + ' ' + MONTH_NAMES[d.getMonth()] + ' ' + d.getFullYear();
+    }
+
+    function cleanSeriesName(trace) {
+      if (trace && typeof trace.meta === 'string' && trace.meta.trim()) return trace.meta.trim();
+      const raw = String((trace && trace.name) || 'Series');
+      return raw.replace(/\\s*\\([+-]?[\\d,.]+%\\)\\s*$/, '').trim() || raw;
+    }
+
+    function positionHoverCard(card, clientX, clientY) {
+      const pad = 16;
+      const w = card.offsetWidth || 280;
+      const h = card.offsetHeight || 160;
+      let left = clientX + 18;
+      if (left + w > window.innerWidth - pad) {
+        left = Math.max(pad, clientX - w - 18);
+      }
+      let top = clientY - Math.round(h * 0.35);
+      top = Math.max(pad, Math.min(top, window.innerHeight - h - pad));
+      card.style.left = Math.round(left) + 'px';
+      card.style.top = Math.round(top) + 'px';
+    }
+
+    function bindModernTimeSeriesHover(plotId, mode) {
+      const gd = document.getElementById(plotId);
+      const card = document.getElementById('chart-hover-card');
+      if (!gd || !card || typeof gd.on !== 'function' || gd.dataset.modernHoverBound === '1') return;
+      gd.dataset.modernHoverBound = '1';
+
+      const chartBox = gd.closest('.chart') || gd;
+      chartBox.addEventListener('mousemove', function(ev) {
+        lastPointer = { x: ev.clientX, y: ev.clientY };
+        if (!card.hidden && card.dataset.ownerPlot === plotId) {
+          positionHoverCard(card, ev.clientX, ev.clientY);
+        }
+      }, { passive: true });
+      chartBox.addEventListener('mouseleave', function() {
+        if (card.dataset.ownerPlot === plotId) hideHoverCard();
+      });
+
+      gd.on('plotly_hover', function(ev) {
+        if (!ev || !Array.isArray(ev.points) || !ev.points.length) return;
+        const pts = ev.points.filter(function(p) {
+          return p && p.y != null && !Number.isNaN(Number(p.y)) && p.data && p.data.hoverinfo !== 'skip';
+        });
+        if (!pts.length) return;
+
+        const dateLabel = formatHoverDate(pts[0].x);
+        const currUpper = CURRENCY.toUpperCase();
+        const items = pts.map(function(p) {
+          const trace = p.data || {};
+          const name = cleanSeriesName(trace);
+          const color = (trace.line && trace.line.color) || '#60a5fa';
+          const yNum = Number(p.y);
+          const isPortfolio = name === 'Your portfolio' || name === 'Portfolio NAV';
+          let valText = '';
+          let toneCls = '';
+          if (mode === 'pct') {
+            valText = (yNum >= 0 ? '+' : '') + yNum.toFixed(2) + '%';
+            toneCls = yNum > 0 ? ' is-pos' : (yNum < 0 ? ' is-neg' : '');
+          } else {
+            valText = fmtNum(yNum, 2) + ' ' + currUpper;
+            if (name === 'Portfolio NAV' && pts.length > 1) {
+              const depPt = pts.find(function(o) { return cleanSeriesName(o.data) === 'Net contributions'; });
+              if (depPt && Number.isFinite(Number(depPt.y))) {
+                toneCls = yNum >= Number(depPt.y) ? ' is-pos' : ' is-neg';
+              }
+            }
+          }
+          return { name: name, color: color, y: yNum, valText: valText, toneCls: toneCls, isPortfolio: isPortfolio };
+        });
+
+        items.sort(function(a, b) { return b.y - a.y; });
+
+        const badgeTxt = mode === 'pct' ? 'Return (ROI)' : ('Value (' + currUpper + ')');
+        const rowsHtml = items.map(function(it) {
+          return (
+            '<div class="chc-row' + (it.isPortfolio ? ' is-portfolio' : '') + '">' +
+            '<span class="chc-dot" style="background:' + escHtml(it.color) + ';box-shadow:0 0 8px ' + escHtml(it.color) + '"></span>' +
+            '<span class="chc-name">' + escHtml(it.name) + '</span>' +
+            '<span class="chc-val' + it.toneCls + '">' + escHtml(it.valText) + '</span>' +
+            '</div>'
+          );
+        }).join('');
+
+        card.innerHTML = (
+          '<div class="chc-header">' +
+          '<span class="chc-date">' + escHtml(dateLabel) + '</span>' +
+          '<span class="chc-badge">' + escHtml(badgeTxt) + '</span>' +
+          '</div>' +
+          '<div class="chc-rows">' + rowsHtml + '</div>'
+        );
+        card.dataset.ownerPlot = plotId;
+        card.hidden = false;
+
+        let cx = lastPointer.x;
+        let cy = lastPointer.y;
+        if (ev.event && typeof ev.event.clientX === 'number') {
+          cx = ev.event.clientX;
+          cy = ev.event.clientY;
+        } else {
+          const r = gd.getBoundingClientRect();
+          cx = r.left + r.width * 0.55;
+          cy = r.top + r.height * 0.35;
+        }
+        positionHoverCard(card, cx, cy);
+      });
+
+      gd.on('plotly_unhover', function() {
+        if (card.dataset.ownerPlot === plotId) hideHoverCard();
+      });
+    }
+
+    bindModernTimeSeriesHover('chart-benchmark', 'pct');
+    bindModernTimeSeriesHover('chart-nav', 'value');
+    window.addEventListener('scroll', hideHoverCard, { passive: true });
     document.querySelectorAll('.chart-controls').forEach(function(controls) {
       controls.addEventListener('click', async function(event) {
         const button = event.target.closest('button');
@@ -2670,7 +3377,11 @@ _LIVE_SCRIPT = """
       btn.setAttribute('aria-expanded', 'true');
 
       document.getElementById('metric-popover-title').textContent = def.title || '';
-      document.getElementById('metric-popover-formula').textContent = def.formula || '';
+      const formulaEl = document.getElementById('metric-popover-formula');
+      if (formulaEl) {
+        formulaEl.innerHTML = def.formula_html || escHtml(def.formula || '');
+        formulaEl.setAttribute('aria-label', def.formula || '');
+      }
       document.getElementById('metric-popover-explanation').textContent = def.explanation || '';
       document.getElementById('metric-popover-example').textContent = def.example || '';
 
@@ -2751,11 +3462,61 @@ _LIVE_SCRIPT = """
       }
     });
 
+    const aboutPopover = document.getElementById('about-popover');
+    const aboutBtn = document.getElementById('about-report-btn');
+    const aboutClose = document.getElementById('about-popover-close');
+
+    function closeAboutPopover(restoreFocus) {
+      if (!aboutPopover || aboutPopover.hidden) return;
+      aboutPopover.hidden = true;
+      if (aboutBtn) aboutBtn.setAttribute('aria-expanded', 'false');
+      if (backdrop && (!popover || popover.hidden)) backdrop.hidden = true;
+      if (restoreFocus && aboutBtn) aboutBtn.focus();
+    }
+
+    function openAboutPopover() {
+      if (!aboutPopover || !aboutBtn) return;
+      closeMetricPopover(false);
+      aboutPopover.hidden = false;
+      aboutBtn.setAttribute('aria-expanded', 'true');
+      const isMobile = window.innerWidth <= 680;
+      if (backdrop) backdrop.hidden = !isMobile;
+      if (isMobile) {
+        aboutPopover.style.left = '';
+        aboutPopover.style.top = '';
+        aboutPopover.style.width = '';
+      } else {
+        const rect = aboutBtn.getBoundingClientRect();
+        const popW = Math.min(400, window.innerWidth - 28);
+        aboutPopover.style.width = popW + 'px';
+        const left = Math.max(14, Math.min(rect.right - popW, window.innerWidth - popW - 14));
+        const top = Math.min(rect.bottom + 10, window.innerHeight - (aboutPopover.offsetHeight || 220) - 14);
+        aboutPopover.style.left = Math.round(left) + 'px';
+        aboutPopover.style.top = Math.round(Math.max(14, top)) + 'px';
+      }
+    }
+
+    if (aboutBtn) {
+      aboutBtn.addEventListener('click', function(e) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (aboutPopover && !aboutPopover.hidden) closeAboutPopover(false);
+        else openAboutPopover();
+      });
+    }
+    if (aboutClose) {
+      aboutClose.addEventListener('click', function(e) {
+        e.preventDefault();
+        closeAboutPopover(true);
+      });
+    }
+
     document.addEventListener('click', function(e) {
       const btn = e.target.closest('.metric-info-btn');
       if (btn) {
         e.preventDefault();
         e.stopPropagation();
+        closeAboutPopover(false);
         if (pinnedMetricBtn === btn) {
           closeMetricPopover(false);
         } else {
@@ -2766,17 +3527,29 @@ _LIVE_SCRIPT = """
       if (e.target.closest('#metric-popover-close') || e.target.closest('#metric-backdrop')) {
         e.preventDefault();
         closeMetricPopover(true);
+        closeAboutPopover(true);
         return;
       }
       if (popover && !popover.hidden && !e.target.closest('#metric-popover')) {
         closeMetricPopover(false);
       }
+      if (aboutPopover && !aboutPopover.hidden && !e.target.closest('#about-popover') && !e.target.closest('#about-report-btn')) {
+        closeAboutPopover(false);
+      }
     });
 
     document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape' && popover && !popover.hidden) {
-        e.preventDefault();
-        closeMetricPopover(true);
+      if (e.key === 'Escape') {
+        if (popover && !popover.hidden) {
+          e.preventDefault();
+          closeMetricPopover(true);
+        } else if (aboutPopover && !aboutPopover.hidden) {
+          e.preventDefault();
+          closeAboutPopover(true);
+        } else if (activeZoomChart) {
+          e.preventDefault();
+          deactivateActiveChart();
+        }
       }
     });
 
@@ -2909,7 +3682,7 @@ _LIVE_SCRIPT = """
             );
           }).join('');
           top10Wrap.innerHTML = (
-            '<div class="table-wrap"><table class="data" id="deposits-top10-table">' +
+            '<div class="table-wrap" data-no-collapse="1"><table class="data" id="deposits-top10-table">' +
             '<thead><tr><th>Rank</th><th>Month</th><th>Deposits</th><th>Total (' + escHtml(curr) + ')</th><th>Share</th></tr></thead>' +
             '<tbody>' + rowsHtml + '</tbody></table></div>'
           );
@@ -2994,17 +3767,17 @@ _LIVE_SCRIPT = """
               '<td>' + fmtNum(r.amount_foreign, 2) + ' ' + escHtml(r.account_currency) + '</td>' +
               '<td>' + fmtNum(r.xtb_rate, 4) + '</td>' +
               '<td><b>' + fmtNum(r.amount, 2) + ' ' + escHtml(curr) + '</b></td>' +
-              '<td class="muted-cell">' + escHtml(r.comment || 'Direct deposit') + '</td>' +
               '</tr>'
             );
           }).join('');
           opsWrap.innerHTML = (
-            '<div class="table-wrap deposits-ops-scroll"><table class="data" id="deposits-ops-table">' +
+            '<div class="table-wrap" data-preview-limit="10"><table class="data" id="deposits-ops-table">' +
             '<thead><tr><th>Date &amp; time</th><th>Account</th><th>Account amount</th>' +
-            '<th>FX rate</th><th>Amount (' + escHtml(curr) + ')</th><th>Operation details</th></tr></thead>' +
+            '<th>FX rate</th><th>Amount (' + escHtml(curr) + ')</th></tr></thead>' +
             '<tbody>' + opsRows + '</tbody></table></div>'
           );
           enableTableSorting(opsWrap);
+          setupCollapsibleTables(opsWrap);
         }
       }
 
@@ -3353,7 +4126,7 @@ _LIVE_SCRIPT = """
             );
           }).join('');
           fifoWrap.innerHTML = (
-            '<div class="table-wrap"><table class="data" id="pit38-fifo-table">' +
+            '<div class="table-wrap" data-preview-limit="5"><table class="data" id="pit38-fifo-table">' +
             '<thead><tr><th>Symbol</th><th>Buy date</th><th>Sell date</th><th>Shares</th>' +
             '<th>Buy cost (orig)</th><th>Buy NBP (D−1)</th><th>Acq. cost (PLN)</th>' +
             '<th>Proceeds (orig)</th><th>Sell NBP (D−1)</th><th>Revenue (PLN)</th>' +
@@ -3362,6 +4135,7 @@ _LIVE_SCRIPT = """
           );
           decorateTableSemantics(fifoWrap);
           enableTableSorting(fifoWrap);
+          setupCollapsibleTables(fifoWrap);
         }
       }
 
@@ -3397,7 +4171,7 @@ _LIVE_SCRIPT = """
             );
           }).join('');
           divWrap.innerHTML = (
-            '<div class="table-wrap"><table class="data" id="pit38-div-table">' +
+            '<div class="table-wrap" data-preview-limit="5"><table class="data" id="pit38-div-table">' +
             '<thead><tr><th>Date</th><th>Symbol</th><th>Gross (orig)</th><th>WHT paid (orig)</th>' +
             '<th>WHT %</th><th>NBP rate (D−1)</th><th>Gross (PLN)</th><th>19% PL tax</th>' +
             '<th>WHT credit</th><th>Tax due (Do dopłaty)</th></tr></thead>' +
@@ -3405,6 +4179,7 @@ _LIVE_SCRIPT = """
           );
           decorateTableSemantics(divWrap);
           enableTableSorting(divWrap);
+          setupCollapsibleTables(divWrap);
         }
       }
     }
@@ -3569,9 +4344,10 @@ _LIVE_SCRIPT = """
 
 
 def render_html_report(data: ReportData) -> str:
-    now_ts = _now_utc()
-    generated = now_ts.strftime("%Y-%m-%d %H:%M:%S")
-    as_of_with_time = f"{data.measures.as_of} ({now_ts.strftime('%H:%M:%S')})"
+    now_ts = _now_warsaw()
+    tz_abbr = now_ts.tzname() or "CET"
+    generated = f"{now_ts.strftime('%Y-%m-%d %H:%M:%S')} {tz_abbr}"
+    as_of_with_time = f"{data.measures.as_of} ({now_ts.strftime('%H:%M:%S')} {tz_abbr})"
 
     benchmark_fig = build_return_comparison_figure(data.nav, data.benchmarks, data.currency)
 
@@ -3799,7 +4575,7 @@ def render_html_report(data: ReportData) -> str:
     data_notice = (
         "Synthetic demo: fictional trades, quotes, FX, and indices. No network access."
         if data.is_demo
-        else "Prices: Yahoo Finance. FX: NBP with Yahoo fallback. Quotes may be delayed."
+        else "Prices: Yahoo Finance. FX: NBP Table A with Yahoo fallback. Quotes may be delayed."
     )
 
     return f"""<!DOCTYPE html>
@@ -3813,7 +4589,6 @@ def render_html_report(data: ReportData) -> str:
 </head>
 <body>
 <div class="container">
-<p class="section-desc" id="data-source-notice">{data_notice}</p>
 <header class="hero">
   <div class="hero-title-group">
     <h1>XTB Portfolio Report</h1>
@@ -3830,9 +4605,12 @@ def render_html_report(data: ReportData) -> str:
       <span class="currency-switch-label">Currency:</span>
       {curr_buttons_html}
     </div>
-    <button type="button" class="live-trigger is-on" id="live-market-badge" title="Toggle live polling. Provider quotes may be delayed.">
+    <button type="button" class="live-trigger is-on" id="live-market-badge" title="Toggle 5-second live polling. Provider quotes may be delayed.">
       <span class="live-dot on" id="live-dot"></span>
       <span id="live-status-text">Live updates: ON</span>
+    </button>
+    <button type="button" class="about-trigger" id="about-report-btn" aria-haspopup="dialog" aria-expanded="false" title="Report metadata, data sources, and disclaimer">
+      About
     </button>
   </div>
 </header>
@@ -3899,12 +4677,7 @@ def render_html_report(data: ReportData) -> str:
 {panel_holdings}
 {panel_costs}
 {panel_pit38}
-{_metric_popover_html()}
-
-<footer>
-Generated <span id="live-generated">{generated}</span> UTC by XTB Portfolio Analyzer. {data_notice}
-For educational analysis; not investment or tax advice.
-</footer>
+{_metric_popover_html(generated, data_notice)}
 </div>
 {live_script}
 </body>

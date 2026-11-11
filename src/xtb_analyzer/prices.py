@@ -2,23 +2,49 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date, timedelta
+import threading
+import time
+from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import yfinance as yf
 
 CACHE_DIR = Path("data/cache/prices")
+WARSAW_TZ = ZoneInfo("Europe/Warsaw")
+
+_XTB_SUFFIX_TO_YAHOO = {
+    ".US": "",
+    ".PL": ".WA",
+    ".UK": ".L",
+    ".NL": ".AS",
+    ".FR": ".PA",
+    ".ES": ".MC",
+    ".IT": ".MI",
+    ".BE": ".BR",
+    ".PT": ".LS",
+    ".FI": ".HE",
+    ".AT": ".VI",
+}
+
+_LIVE_QUOTE_TTL_SECONDS = 4.0
+_LIVE_RATE_LIMIT_COOLDOWN_SECONDS = 15.0
+_live_quote_lock = threading.Lock()
+_live_quote_memo: dict[str, tuple[float, float]] = {}
+_live_rate_limited_until: float = 0.0
+
+
+def warsaw_today() -> pd.Timestamp:
+    """Current calendar date in Europe/Warsaw (normalized Timestamp)."""
+    return pd.Timestamp(datetime.now(WARSAW_TZ).date())
 
 
 def xtb_to_yahoo(symbol: str) -> str:
     symbol = symbol.strip().upper()
-    if symbol.endswith(".US"):
-        return symbol[:-3]
-    if symbol.endswith(".PL"):
-        return symbol[:-3] + ".WA"
-    if symbol.endswith(".UK"):
-        return symbol[:-3] + ".L"
+    for suffix, replacement in _XTB_SUFFIX_TO_YAHOO.items():
+        if symbol.endswith(suffix):
+            return symbol[: -len(suffix)] + replacement
     return symbol
 
 
@@ -32,7 +58,7 @@ def _cache_path(ticker: str, adjusted: bool = True) -> Path:
 def _default_end(end: str | None) -> str:
     if end:
         return end
-    return (date.today() + timedelta(days=1)).isoformat()
+    return (warsaw_today() + timedelta(days=1)).date().isoformat()
 
 
 def _normalize_index(series: pd.Series) -> pd.Series:
@@ -143,36 +169,70 @@ def _needs_refresh(
         return False
     # Avoid re-downloading multi-day history on every live tick if cache was updated recently
     if cache_file is not None and cache_file.exists():
-        import time
-
         age_seconds = time.time() - cache_file.stat().st_mtime
         if age_seconds < 300:
             return False
     return True
 
 
-def _fetch_single_live_price(ticker: str) -> tuple[str, float | None]:
+def _fetch_single_live_price(ticker: str) -> tuple[str, float | None, bool]:
     try:
         t = yf.Ticker(ticker)
         fast = t.fast_info
         price = getattr(fast, "last_price", None) or getattr(fast, "regular_market_price", None)
         if price and float(price) > 0:
-            return ticker, float(price)
-    except Exception:
-        pass
-    return ticker, None
+            return ticker, float(price), False
+    except Exception as exc:
+        msg = str(exc).lower()
+        if "429" in msg or "too many requests" in msg or "rate limit" in msg:
+            return ticker, None, True
+    return ticker, None, False
 
 
 def _fetch_live_prices(tickers: list[str]) -> dict[str, float]:
     from concurrent.futures import ThreadPoolExecutor
 
+    global _live_rate_limited_until
     if not tickers:
         return {}
+
+    now = time.monotonic()
     live: dict[str, float] = {}
-    with ThreadPoolExecutor(max_workers=min(8, len(tickers))) as pool:
-        for ticker, price in pool.map(_fetch_single_live_price, tickers):
+    to_query: list[str] = []
+
+    with _live_quote_lock:
+        rate_limited = now < _live_rate_limited_until
+        for ticker in sorted(set(tickers)):
+            cached = _live_quote_memo.get(ticker)
+            if cached is not None and (now - cached[0]) < _LIVE_QUOTE_TTL_SECONDS:
+                live[ticker] = cached[1]
+            elif rate_limited and cached is not None:
+                live[ticker] = cached[1]
+            elif not rate_limited:
+                to_query.append(ticker)
+
+    if not to_query:
+        return live
+
+    saw_rate_limit = False
+    fresh: dict[str, float] = {}
+    with ThreadPoolExecutor(max_workers=min(8, len(to_query))) as pool:
+        for ticker, price, hit_limit in pool.map(_fetch_single_live_price, to_query):
+            if hit_limit:
+                saw_rate_limit = True
             if price is not None and price > 0:
+                fresh[ticker] = price
                 live[ticker] = price
+
+    stamp = time.monotonic()
+    with _live_quote_lock:
+        for ticker, price in fresh.items():
+            _live_quote_memo[ticker] = (stamp, price)
+        if saw_rate_limit:
+            _live_rate_limited_until = stamp + _LIVE_RATE_LIMIT_COOLDOWN_SECONDS
+            for ticker in to_query:
+                if ticker not in live and ticker in _live_quote_memo:
+                    live[ticker] = _live_quote_memo[ticker][1]
     return live
 
 
@@ -180,7 +240,7 @@ def _apply_live_quote(series: pd.Series, price: float) -> pd.Series:
     if series.empty or price <= 0:
         return series
     updated = series.copy()
-    today = pd.Timestamp.today().normalize()
+    today = warsaw_today()
     if today > updated.index.max():
         updated.loc[today] = price
     else:

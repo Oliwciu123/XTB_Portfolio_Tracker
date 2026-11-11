@@ -45,6 +45,10 @@ For the offline demo on Windows, open a terminal in that folder and run:
 .\XTBPortfolioAnalyzer.exe --demo
 ```
 
+If you build locally from source with `build_windows.bat`, it also creates or refreshes
+an **XTB Portfolio Analyzer** shortcut on your Windows Desktop automatically (or run
+`uv run python scripts/create_desktop_shortcut.py --build-if-missing` anytime).
+
 ### macOS
 1. Download [`XTBPortfolioAnalyzer-macOS.zip`](https://github.com/Oliwciu123/XTB_Portfolio_Tracker/releases/latest/download/XTBPortfolioAnalyzer-macOS.zip) from the latest GitHub Release.
 2. Extract the archive and open `XTBPortfolioAnalyzer/XTBPortfolioAnalyzer.app` (right-click and choose **Open** on first launch).

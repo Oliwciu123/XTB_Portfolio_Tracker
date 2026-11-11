@@ -67,6 +67,9 @@ def _package_windows() -> Path:
     app = ROOT / "dist" / "XTBPortfolioAnalyzer"
     shutil.copy2(ROOT / "docs" / "USER_GUIDE.md", app / "START.md")
     shutil.copy2(ROOT / "LICENSE", app / "LICENSE")
+    ico = ROOT / "src" / "xtb_analyzer" / "assets" / "app.ico"
+    if ico.is_file():
+        shutil.copy2(ico, app / "app.ico")
     archive = ROOT / "dist" / "XTBPortfolioAnalyzer-Windows.zip"
     archive.unlink(missing_ok=True)
     with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as z:

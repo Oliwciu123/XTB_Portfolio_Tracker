@@ -12,6 +12,7 @@ from xtb_analyzer.comment_parser import (
 )
 from xtb_analyzer.fx import convert_value, fetch_fx_rates
 from xtb_analyzer.models import Account
+from xtb_analyzer.prices import warsaw_today
 
 CONVERSION_FEE_RATE = Decimal("0.005")
 MONTH_ABBR = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
@@ -149,7 +150,7 @@ def attach_deposits_to_nav(
 ) -> pd.DataFrame:
     if nav.empty:
         return nav
-    end = (pd.Timestamp.today().normalize() + pd.Timedelta(days=1)).date().isoformat()
+    end = (warsaw_today() + pd.Timedelta(days=1)).date().isoformat()
     if fx is None:
         fx = fetch_fx_rates(start=nav.index[0].date().isoformat(), end=end, use_cache=use_cache)
     deposits = extract_deposits(accounts, fx=fx)
@@ -364,16 +365,8 @@ def aggregate_deposits_monthly(
         for _, row in grouped.iterrows()
     }
 
-    # Build a clean continuous monthly axis for selected years (or min..max period when contiguous).
-    if selected_years and len(selected_years) <= 2:
-        max_ym_in_data = str(deposit_ops["year_month"].max())
-        timeline_months: list[tuple[int, int]] = []
-        for yr in selected_years:
-            for m in range(1, 13):
-                ym = f"{yr:04d}-{m:02d}"
-                if ym <= max_ym_in_data or ym in by_ym:
-                    timeline_months.append((yr, m))
-    elif selected_years:
+    # Build a clean continuous monthly axis for selected years (or min..max period when unfiltered).
+    if selected_years:
         max_ym_in_data = str(deposit_ops["year_month"].max())
         timeline_months = [
             (yr, m)

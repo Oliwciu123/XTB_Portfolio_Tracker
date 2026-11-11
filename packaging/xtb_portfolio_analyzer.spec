@@ -42,6 +42,7 @@ if sys.platform == "win32":
         "plotly",
         "yfinance",
         "certifi",
+        "tzdata",
     )
 elif sys.platform == "darwin":
     platform_hidden = [
@@ -55,10 +56,10 @@ elif sys.platform == "darwin":
         "Security",
         "UniformTypeIdentifiers",
     ]
-    collect_packages = ("webview", "tkinterdnd2", "plotly", "yfinance", "certifi")
+    collect_packages = ("webview", "tkinterdnd2", "plotly", "yfinance", "certifi", "tzdata")
 else:
     platform_hidden = []
-    collect_packages = ("webview", "tkinterdnd2", "plotly", "yfinance", "certifi")
+    collect_packages = ("webview", "tkinterdnd2", "plotly", "yfinance", "certifi", "tzdata")
 
 hiddenimports = [
     "webview",

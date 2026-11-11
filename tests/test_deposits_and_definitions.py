@@ -163,22 +163,63 @@ def test_metric_definitions_catalog_complete_and_valid():
     for key, item in serialized.items():
         assert item["title"], f"Missing title for {key}"
         assert item["formula"], f"Missing formula for {key}"
+        assert "m-expr" in str(item["formula_html"]), f"Missing typeset formula_html for {key}"
         assert len(str(item["explanation"])) >= 40, f"Explanation too short for {key}"
         assert any(ch.isdigit() for ch in str(item["example"])), f"Example lacks numbers for {key}"
         for rng in item["ranges"]:  # type: ignore[union-attr]
             assert rng["tone"] in {"pos", "neutral", "neg"}
 
 
+def test_windows_shortcut_powershell_command_builder(tmp_path: Path):
+    """Verify Windows Desktop shortcut script escapes paths and configures icon/working dir."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "create_desktop_shortcut",
+        EXAMPLES.parent / "scripts" / "create_desktop_shortcut.py",
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    ps = mod.build_powershell_shortcut_script(
+        shortcut_path=tmp_path / "Oliwier's Desktop" / "XTB Portfolio Analyzer.lnk",
+        exe_path=tmp_path / "dist" / "XTBPortfolioAnalyzer" / "XTBPortfolioAnalyzer.exe",
+        working_dir=tmp_path / "dist" / "XTBPortfolioAnalyzer",
+        icon_path=tmp_path / "dist" / "XTBPortfolioAnalyzer" / "app.ico",
+    )
+    assert "WScript.Shell" in ps
+    assert "Oliwier''s Desktop" in ps
+    assert "app.ico,0" in ps
+    assert "XTBPortfolioAnalyzer.exe" in ps
+
+
 def test_rendered_report_includes_deposits_definitions_and_pit38_sections(tmp_path: Path):
-    """Self-contained HTML includes Deposits, Metric Definitions popover, and PIT-38 sections."""
+    """Self-contained HTML includes v1.2.0 sections, Warsaw time, 5s polling, and clean chrome."""
+    from xtb_analyzer.parser import discover_export_files, load_accounts
+    from xtb_analyzer.report import build_live_payload, collect_report_data
+
     market = MarketData.from_examples(EXAMPLES)
+    accounts = load_accounts(discover_export_files(EXAMPLES))
+    data = collect_report_data(accounts, market_data=market, refresh_latest=False)
+    live = build_live_payload(data)
+    assert live["as_of"].endswith(("CET)", "CEST)"))
+    assert str(live["time_label"]).endswith(("CET", "CEST"))
+
     report_path = generate_report(EXAMPLES, tmp_path, market_data=market, refresh_latest=False)
     html = report_path.read_text(encoding="utf-8")
 
     assert "id='deposits'" in html
     assert 'id="chart-deposits"' in html
     assert "id='deposits-top10-table'" in html
+    assert "Operation details" not in html
+    assert 'id="data-source-notice"' not in html
+    assert "<footer>" not in html
+    assert 'id="about-report-btn"' in html
+    assert "id='about-popover'" in html
+    assert "const POLL_INTERVAL_MS = 5000;" in html
     assert "id='metric-popover'" in html
+    assert "id='chart-hover-card'" in html
     assert "data-metric-key='sharpe'" in html
     assert "data-metric-key='win_rate'" in html
     assert "data-metric-key='profit_factor'" in html
@@ -191,7 +232,7 @@ def test_rendered_report_includes_deposits_definitions_and_pit38_sections(tmp_pa
 
 
 def test_playwright_interactive_deposits_definitions_and_pit38(tmp_path: Path):
-    """End-to-end browser verification of Deposits filters, Metric Popovers, and PIT-38 switching."""
+    """End-to-end browser verification of v1.2.0 zoom, math, collapsible tables, and PIT-38."""
     playwright_mod = pytest.importorskip("playwright.sync_api")
     market = MarketData.from_examples(EXAMPLES)
     report_path = generate_report(EXAMPLES, tmp_path, market_data=market, refresh_latest=False)
@@ -207,21 +248,52 @@ def test_playwright_interactive_deposits_definitions_and_pit38(tmp_path: Path):
         errors: list[str] = []
         page.on("pageerror", lambda err: errors.append(str(err)))
         page.goto(report_path.resolve().as_uri())
+        page.wait_for_function(
+            "() => [...document.querySelectorAll('.js-plotly-plot')].length === 8"
+        )
 
-        # 1. Interactive Metric Definitions: click Sharpe ratio info button, verify content, close with Escape
+        # 0. Click-to-activate chart wheel zoom: off by default, on after click, off on Escape
+        assert page.evaluate(
+            "() => [...document.querySelectorAll('.js-plotly-plot')].every(p => !p._context.scrollZoom)"
+        )
+        nav_chart_box = page.locator('[data-chart-box="chart-nav"]')
+        nav_chart_box.locator(".nsewdrag").first.click()
+        assert "is-zoom-active" in (nav_chart_box.get_attribute("class") or "")
+        assert page.evaluate(
+            "() => document.getElementById('chart-nav')._context.scrollZoom === true"
+        )
+        page.keyboard.press("Escape")
+        assert "is-zoom-active" not in (nav_chart_box.get_attribute("class") or "")
+        assert page.evaluate(
+            "() => document.getElementById('chart-nav')._context.scrollZoom === false"
+        )
+
+        # 1. Interactive Metric Definitions: typeset math formula (.m-frac, .m-sqrt)
         sharpe_btn = page.locator('[data-metric-key="sharpe"]').first
         sharpe_btn.click()
         popover = page.locator("#metric-popover")
         assert popover.is_visible()
+        assert page.locator("#metric-popover-formula .m-frac").count() >= 1
+        assert page.locator("#metric-popover-formula .m-sqrt").count() >= 1
         assert "Sharpe Ratio" in popover.inner_text()
         assert "1.25" in popover.inner_text()
         assert "1.0 – 2.0" in popover.inner_text()
         page.keyboard.press("Escape")
         assert popover.is_hidden()
 
-        # 2. Deposit Analytics: switch tab, combine 2024 + 2025, inspect March, verify Top 10 & operations
+        # 2. Deposit Analytics: collapsible preview (10 of 72 initially), no Operation details col
         page.locator('[data-target="deposits"]').click()
         assert page.locator("#deposits").is_visible()
+        dep_headers = page.locator("#deposits-ops-table thead th").all_inner_texts()
+        assert "Operation details" not in dep_headers
+        assert page.locator("#deposits-ops-table tbody tr:visible").count() == 10
+        assert (
+            "Showing 10 of 72 rows"
+            in page.locator("#deposits-ops-wrap .table-collapse-bar").inner_text()
+        )
+        page.locator("#deposits-ops-wrap .table-expand-btn").click()
+        assert page.locator("#deposits-ops-table tbody tr:visible").count() == 72
+
         page.locator('[data-dep-year="2024"]').click()
         page.locator('[data-dep-year="2025"]').click()
         banner_txt = page.locator("#dep-scope-banner").inner_text()
@@ -236,9 +308,19 @@ def test_playwright_interactive_deposits_definitions_and_pit38(tmp_path: Path):
         ops_rows = page.locator("#deposits-ops-table tbody tr")
         assert ops_rows.count() == 2  # Mar 2024 + Mar 2025
 
-        # 3. Polish PIT-38: switch tab, verify 2026 YTD default & switch to 2024 loss year
+        # 3. Polish PIT-38: collapsed FIFO table (5 of 11 rows in 2026 YTD) + expand/collapse
         page.locator('[data-target="pit38"]').click()
         assert page.locator("#pit38").is_visible()
+        assert page.locator("#pit38-fifo-table tbody tr:visible").count() == 5
+        assert (
+            "Showing 5 of 11 rows"
+            in page.locator("#pit38-fifo-wrap .table-collapse-bar").inner_text()
+        )
+        page.locator("#pit38-fifo-wrap .table-expand-btn").click()
+        assert page.locator("#pit38-fifo-table tbody tr:visible").count() == 11
+        page.locator("#pit38-fifo-wrap .table-expand-btn").click()
+        assert page.locator("#pit38-fifo-table tbody tr:visible").count() == 5
+
         cards_2026 = page.locator("#pit38-cards-wrap").inner_text()
         assert "2026 YTD estimate" in cards_2026
         assert "1,561.30 PLN" in cards_2026

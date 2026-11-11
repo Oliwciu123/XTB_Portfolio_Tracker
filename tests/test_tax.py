@@ -411,3 +411,94 @@ def test_fifo_preserves_cost_basis_across_stock_splits():
     stats = compute_trade_stats(pit)
     assert stats["win_rate"] == 1.0
     assert stats["profit_factor"] is None  # zero losing trades
+
+
+def test_split_on_first_purchase_day_does_not_double_split_post_split_lot():
+    """Regression: a lot purchased ON the split effective date is already post-split."""
+    fx = pd.DataFrame(
+        {"USDPLN": [4.0000, 4.1000], "EURPLN": [4.3000, 4.4000]},
+        index=pd.to_datetime(["2025-02-28", "2025-06-09"]),
+    )
+    acc = Account(
+        account_id="u1",
+        currency="USD",
+        transactions=[
+            _tx(
+                "b-on-split",
+                "u1",
+                "USD",
+                "buy",
+                "2025-03-03 15:00:00",
+                "-1000.00",
+                symbol="NVDA.US",
+                shares=10,
+                price=100,
+            ),
+            _tx(
+                "s-later",
+                "u1",
+                "USD",
+                "sell",
+                "2025-06-10 15:00:00",
+                "1200.00",
+                symbol="NVDA.US",
+                shares=10,
+                price=120,
+            ),
+        ],
+    )
+    pit = compute_pit38_report([acc], fx=fx, splits={"NVDA.US": {"2025-03-03": 2.0}})
+    assert pit.open_lots_count == 0
+    assert len(pit.fifo_matches) == 1
+    assert pit.fifo_matches[0].acquisition_cost_pln == pytest.approx(4000.00)
+    # 2025 is a completed prior calendar year relative to 2026
+    assert pit.by_year[2025].is_ytd is False
+
+
+def test_early_january_fx_cache_requires_prior_year_d_minus_1_lookback(tmp_path, monkeypatch):
+    """Regression: cache starting on Jan 2 must refresh to fetch Dec 29 D-1 NBP rate."""
+    from xtb_analyzer import fx as fx_mod
+
+    monkeypatch.setattr(fx_mod, "CACHE_DIR", tmp_path)
+    stale_cache = pd.DataFrame(
+        {"USDPLN": [3.99], "EURPLN": [4.34], "EURUSD": [4.34 / 3.99], "USDEUR": [3.99 / 4.34]},
+        index=pd.to_datetime(["2024-01-02"]),
+    )
+    stale_cache.to_parquet(tmp_path / "fx_rates_v3.parquet")
+
+    full_dates = pd.to_datetime(["2023-12-22", "2023-12-29", "2024-01-02", "2024-01-03"])
+    monkeypatch.setattr(
+        fx_mod,
+        "_nbp_series",
+        lambda code, start, end=None: pd.Series(
+            [3.92, 3.9350, 3.98, 3.99] if code.lower() == "usd" else [4.31, 4.3480, 4.35, 4.36],
+            index=full_dates,
+            name=f"{code.upper()}PLN",
+        ),
+    )
+
+    loaded = fx_mod.fetch_fx_rates(start="2024-01-02", end="2024-01-04", use_cache=True)
+    jan2_nbp = lookup_nbp_d_minus_1_rate("USD", "2024-01-02 10:00:00", loaded)
+    assert jan2_nbp.effective_date == "2023-12-29"
+    assert jan2_nbp.rate == Decimal("3.935")
+
+
+def test_eurozone_xtb_suffixes_and_direct_pln_cash_ledger():
+    """Verify Eurozone XTB ticker mappings and direct PLN bank deposits in CashLedger."""
+    from xtb_analyzer.cash import build_cash_ledger
+    from xtb_analyzer.prices import xtb_to_yahoo
+
+    assert xtb_to_yahoo("ASML.NL") == "ASML.AS"
+    assert xtb_to_yahoo("MC.FR") == "MC.PA"
+    assert xtb_to_yahoo("SAN.ES") == "SAN.MC"
+    assert xtb_to_yahoo("ENI.IT") == "ENI.MI"
+
+    pln_acc = Account(
+        account_id="pln-direct",
+        currency="PLN",
+        transactions=[
+            _tx("d1", "pln-direct", "PLN", "transfer_in", "2025-04-10 09:00:00", "2500.00"),
+        ],
+    )
+    ledger = build_cash_ledger([pln_acc])
+    assert ledger.deposits_pln == Decimal("2500.00")
