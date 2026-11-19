@@ -234,7 +234,7 @@ def test_rendered_report_includes_deposits_definitions_and_pit38_sections(tmp_pa
     assert "__DEPOSITS_JSON__" not in html
     assert "__PIT38_JSON__" not in html
     assert "id='indicator-guide'" in html
-    assert "XTB Portfolio Tracker v1.3.0" in html
+    assert "XTB Portfolio Tracker v1.3.1" in html
     assert not re.search(r"""<script[^>]+src=['"]https?:""", html)
     assert not re.search(r"""<link[^>]+href=['"]https?:""", html)
 
@@ -263,6 +263,11 @@ def test_playwright_interactive_deposits_definitions_and_pit38(tmp_path: Path):
         # 0. Click-to-activate chart wheel zoom: off by default, on after click, off on Escape
         assert page.evaluate(
             "() => [...document.querySelectorAll('.js-plotly-plot')].every(p => !p._context.scrollZoom)"
+        )
+        assert page.evaluate(
+            """() => [...document.querySelectorAll('.js-plotly-plot')].every(p =>
+                !p._fullLayout.xaxis?.showgrid && !p._fullLayout.yaxis?.showgrid
+            )"""
         )
         nav_chart_box = page.locator('[data-chart-box="chart-nav"]')
         nav_chart_box.locator(".nsewdrag").first.click()
@@ -398,6 +403,36 @@ def test_playwright_interactive_deposits_definitions_and_pit38(tmp_path: Path):
         page.locator('[data-dep-month="3"]').click()
         ops_rows = page.locator("#deposits-ops-table tbody tr")
         assert ops_rows.count() == 2  # Mar 2024 + Mar 2025
+
+        deposits_plot = page.locator("#chart-deposits")
+        plot_area = deposits_plot.locator(".nsewdrag").first
+        baseline = deposits_plot.evaluate(
+            "p => [p._fullLayout.xaxis.range.slice(), p._fullLayout.yaxis.range.slice()]"
+        )
+        plot_area.click()
+        page.wait_for_function(
+            "!document.getElementById('chart-deposits')._fullLayout.xaxis.fixedrange"
+        )
+        plot_area.hover()
+        page.mouse.wheel(0, -450)
+        page.wait_for_function(
+            """base => {
+                const p = document.getElementById('chart-deposits')._fullLayout;
+                return p.xaxis.range[1] - p.xaxis.range[0] < base[0][1] - base[0][0];
+            }""",
+            arg=baseline,
+        )
+        page.locator("#deposits-overview > h2").dblclick()
+        page.wait_for_function(
+            """base => {
+                const p = document.getElementById('chart-deposits')._fullLayout;
+                return [p.xaxis.range, p.yaxis.range].every((range, i) =>
+                    range.every((value, j) => Math.abs(value - base[i][j]) < 0.01)
+                );
+            }""",
+            arg=baseline,
+        )
+        assert page.locator("#deposits-ops-table tbody tr").count() == 2
 
         # 3. Polish PIT-38: collapsed FIFO table (5 of 11 rows in 2026 YTD) + expand/collapse
         page.locator('[data-target="pit38"]').click()

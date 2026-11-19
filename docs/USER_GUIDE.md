@@ -39,9 +39,10 @@ If valuation fails, check history coverage, symbol mapping and the network messa
 
 ## Charts and tables
 
-NAV and return charts have day/week/month/year ranges, drag selection, reset and
-PNG export. Mouse-wheel scrolling scrolls the page by default; click inside any
-chart to enable wheel zoom, and click outside or press `Escape` to exit zoom mode.
+NAV and return charts have day/week/month/year ranges and PNG export. Click a
+chart to enable wheel zoom, then click outside or press `Escape` to exit zoom
+mode. Double-click outside the plot to restore the visible charts to their
+default ranges for the current filters.
 Long tables (FIFO lot matching, dividends, deposit operations and company results)
 show a concise preview with an expand/collapse toggle and row count while search,
 filters and CSV exports always cover every row. Chart hover uses one readout card.

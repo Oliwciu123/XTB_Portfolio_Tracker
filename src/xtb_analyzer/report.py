@@ -20,6 +20,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.offline import get_plotlyjs
 
+from xtb_analyzer import __version__
 from xtb_analyzer.attribution import FxAttribution, compute_fx_attribution
 from xtb_analyzer.benchmark import (
     BENCHMARK_TICKERS,
@@ -360,6 +361,8 @@ def _silence_native_hover(fig: go.Figure) -> go.Figure:
 def _report_figure(fig: go.Figure, plot_id: str | None = None) -> go.Figure:
     fig = go.Figure(fig)
     fig.update_layout(width=None, autosize=True, title_text="", margin_t=24)
+    fig.update_xaxes(showgrid=False)
+    fig.update_yaxes(showgrid=False)
     _silence_native_hover(fig)
     if plot_id in _FIXED_CHARTS:
         fig.update_layout(dragmode=False)
@@ -371,13 +374,9 @@ def _report_figure(fig: go.Figure, plot_id: str | None = None) -> go.Figure:
 def _chart_heading(fig: go.Figure) -> str:
     import re
 
-    parts = re.split(r"<br\s*/?>", fig.layout.title.text or "", maxsplit=1)
-
-    def clean(text):
-        return html_lib.escape(html_lib.unescape(re.sub(r"<[^>]+>", "", text)))
-
-    subtitle = f"<p>{clean(parts[1])}</p>" if len(parts) > 1 else ""
-    return f"<div class='chart-heading'><h3>{clean(parts[0])}</h3>{subtitle}</div>"
+    title = re.split(r"<br\s*/?>", fig.layout.title.text or "", maxsplit=1)[0]
+    title = html_lib.escape(html_lib.unescape(re.sub(r"<[^>]+>", "", title)))
+    return f"<div class='chart-heading'><h3>{title}</h3></div>"
 
 
 def _fig_html(fig: go.Figure, plot_id: str | None = None) -> str:
@@ -403,13 +402,7 @@ def _mathjax_bundle() -> str:
 def _chart(fig: go.Figure, extra_class: str = "", plot_id: str | None = None) -> str:
     cls = f"chart {extra_class}".strip()
     controls = ""
-    zoom_cue = ""
     if plot_id:
-        zoom_cue = (
-            "<span class='chart-zoom-cue' data-zoom-cue aria-live='polite'>"
-            "Click chart to enable wheel zoom"
-            "</span>"
-        )
         if plot_id in ("chart-nav", "chart-benchmark"):
             controls += (
                 "<div class='chart-ranges' role='group' aria-label='Time range'>"
@@ -431,11 +424,9 @@ def _chart(fig: go.Figure, extra_class: str = "", plot_id: str | None = None) ->
                 + "</div>"
             )
         controls += "<div class='chart-actions'>"
-        if plot_id not in _FIXED_CHARTS | {"chart-currency", "chart-sector"}:
-            controls += "<button type='button' data-chart-reset>Reset view</button>"
         controls += "<button type='button' data-chart-export>Save PNG</button></div>"
         controls = f"<div class='chart-controls' data-chart-target='{plot_id}'>{controls}</div>"
-    return f"<div class='{cls}' data-chart-box='{plot_id or ''}'>{zoom_cue}{_chart_heading(fig)}{controls}{_fig_html(fig, plot_id)}</div>"
+    return f"<div class='{cls}' data-chart-box='{plot_id or ''}'>{_chart_heading(fig)}{controls}{_fig_html(fig, plot_id)}</div>"
 
 
 def _table_html(
@@ -927,9 +918,6 @@ def _deposits_section_html(data: ReportData) -> str:
         "<section id='deposits' class='tab-panel' role='tabpanel'>"
         "<div class='panel-block' id='deposits-overview'>"
         "<h2>Deposit analytics &amp; monthly cash contributions</h2>"
-        "<p class='section-desc'>Analyze inbound capital across all history, single years, or "
-        "multi-year combinations. Click any year(s), month pill, or histogram bar to inspect "
-        "exact monthly deposit operations.</p>"
         f"{kpis}"
         "<div class='interactive-toolbar deposits-toolbar'>"
         "<div class='toolbar-row'>"
@@ -960,12 +948,10 @@ def _deposits_section_html(data: ReportData) -> str:
         "<div class='deposits-grid'>"
         "<div class='panel-block' id='deposits-top10-panel'>"
         "<h2 id='dep-top10-heading'>Top 10 deposit months</h2>"
-        "<p class='section-desc' id='dep-top10-sub'>Highest-contribution months in the selected year scope. Click a row to inspect its operations.</p>"
         f"<div id='deposits-top10-wrap'>{top10_html}</div>"
         "</div>"
         "<div class='panel-block' id='deposits-ops-panel'>"
         "<h2 id='dep-ops-heading'>Deposit operations</h2>"
-        f"<p class='section-desc' id='dep-ops-sub'>Showing all {ops_count} inbound deposits ({_fmt_num(total_amt)} {curr}).</p>"
         f"<div id='deposits-ops-wrap'>{ops_html}</div>"
         "</div>"
         "</div>"
@@ -1186,10 +1172,7 @@ def _pit38_section_html(data: ReportData) -> str:
     return (
         "<section id='pit38' class='tab-panel' role='tabpanel'>"
         "<div class='panel-block' id='pit38-summary-panel'>"
-        "<h2>Polish PIT-38 tax settlement</h2>"
-        "<p class='section-desc'>Automated Polish capital-gains (FIFO) and dividend withholding-tax "
-        "calculation converted to PLN at official NBP Table A mid rates from the last business day "
-        "preceding each transaction (D−1).</p>"
+        "<h2>Polish PIT-38 tax estimate</h2>"
         "<div class='interactive-toolbar'>"
         "<div class='filter-group' id='pit38-year-group'>"
         "<span class='toolbar-label'>Tax year:</span>"
@@ -1205,19 +1188,12 @@ def _pit38_section_html(data: ReportData) -> str:
         "</div>"
         "<div class='panel-block' id='pit38-fifo-panel'>"
         "<h2 id='pit38-fifo-heading'>FIFO lot-matching ledger (PIT-38 Section C)</h2>"
-        "<p class='section-desc'>Every sold share slice matched First-In, First-Out to its original "
-        "purchase lot, showing exact D−1 NBP Table A rates and deductible commissions.</p>"
         f"<div id='pit38-fifo-wrap'>{fifo_html}</div>"
         "</div>"
         "<div class='panel-block' id='pit38-div-panel'>"
-        "<h2 id='pit38-div-heading'>Foreign dividends &amp; withholding tax credit (Podatek u źródła)</h2>"
-        "<p class='section-desc'>19% Polish dividend tax minus foreign withholding tax credited up "
-        "to the 19% statutory cap per payment, yielding net Polish tax to pay (do dopłaty).</p>"
+        "<h2 id='pit38-div-heading'>Foreign dividends &amp; withholding tax credit</h2>"
         f"<div id='pit38-dividends-wrap'>{div_html}</div>"
-        "<p class='pit38-disclaimer'>Tax estimate based on reconstructed XTB cash operations, strict "
-        "per-account FIFO lot matching (Art. 30b PIT), D−1 NBP Table A mid rates (Art. 11a PIT), "
-        "and per-payment 19% foreign WHT credit cap (Art. 30a ust. 9 PIT). Cross-check against "
-        "official PIT-8C statements and consult a licensed tax advisor before filing.</p>"
+        "<p class='pit38-disclaimer'>Verify the estimate against your PIT-8C before filing.</p>"
         "</div>"
         "</section>"
     )
@@ -1272,7 +1248,7 @@ def _metric_popover_html(generated: str, data_notice: str) -> str:
         "<div class='metric-popover-header'>"
         "<div>"
         "<div class='metric-popover-eyebrow'>Report metadata</div>"
-        "<h4 id='about-popover-title' class='metric-popover-title'>XTB Portfolio Tracker v1.3.0</h4>"
+        f"<h4 id='about-popover-title' class='metric-popover-title'>XTB Portfolio Tracker v{__version__}</h4>"
         "</div>"
         "<button type='button' id='about-popover-close' class='metric-popover-close' "
         "aria-label='Close about dialog'>×</button>"
@@ -1363,7 +1339,6 @@ button:focus-visible,a:focus-visible { outline:2px solid #38bdf8; outline-offset
 .js-plotly-plot .plotly .modebar { display:none!important; }
 .chart-heading { padding:20px 24px 4px; text-align:left; padding-right:210px; }
 .chart-heading h3 { margin:0; font-size:17px; line-height:1.45; color:#f1f5f9; overflow-wrap:anywhere; }
-.chart-heading p { margin:5px 0 0; color:#94a3b8; font-size:12.5px; line-height:1.7; overflow-wrap:anywhere; }
 .chart-controls { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:10px 24px 12px; }
 .chart-ranges { display:inline-flex; flex-wrap:wrap; gap:3px; background:#091220; border:1px solid #1e304c; border-radius:10px; padding:3px; }
 .chart-actions { display:flex; flex-wrap:wrap; gap:6px; }
@@ -1382,11 +1357,10 @@ button:focus-visible,a:focus-visible { outline:2px solid #38bdf8; outline-offset
   .section-switcher-wrap { margin:14px 0 18px; }
   .switcher-header { margin-bottom:10px; }
   .view-mode-btn { padding:6px 13px; }
-  .nav-cloud { padding:18px 22px; min-height:86px; gap:8px; }
-  .cloud-title { font-size:19px; }
+  .nav-cloud { padding:20px 22px; min-height:104px; gap:9px; }
+  .cloud-title { font-size:21px; }
   .panel-block { padding:18px 22px; margin:16px 0; }
   .panel-block h2 { font-size:18.5px; }
-  .section-desc { margin-bottom:10px; font-size:12.5px; }
   .stat-grid.kpi { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:11px; margin:10px 0 0; }
   .stat-grid.kpi .stat { min-width:0; max-width:none; padding:13px 10px; }
   .kpi .stat-value { font-size:18.5px; }
@@ -1614,7 +1588,7 @@ header.hero {
   border: 1px solid var(--border);
   border-radius: 16px;
   padding: 16px 20px;
-  min-height: 76px;
+  min-height: 90px;
   color: var(--text);
   font-family: inherit;
   cursor: pointer;
@@ -1665,7 +1639,7 @@ header.hero {
   color: #f8fafc;
 }
 .cloud-title {
-  font-size: 17.5px;
+  font-size: 19px;
   font-weight: 700;
   letter-spacing: -0.015em;
   color: var(--text);
@@ -1708,13 +1682,6 @@ h3 {
   font-weight: 600;
   margin: 26px 0 8px;
   color: var(--text);
-  text-align: center;
-}
-.section-desc {
-  color: var(--muted);
-  font-size: 14px;
-  margin: 0 auto 16px;
-  max-width: 820px;
   text-align: center;
 }
 .muted { color: var(--muted); font-size: 14px; }
@@ -2274,37 +2241,6 @@ td.live-updated { animation: cellFlash 1.1s ease-out; }
   color: var(--text);
   border-color: var(--accent-light);
   background: rgba(99, 102, 241, 0.14);
-}
-.chart-zoom-cue {
-  position: absolute;
-  top: 14px;
-  right: 18px;
-  z-index: 6;
-  font-size: 11px;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 999px;
-  background: rgba(15, 23, 42, 0.78);
-  border: 1px solid rgba(100, 116, 139, 0.35);
-  color: #94a3b8;
-  pointer-events: none;
-  opacity: 0;
-  transform: translateY(-2px);
-  transition: opacity 0.18s ease, transform 0.18s ease, background 0.18s ease, color 0.18s ease, border-color 0.18s ease;
-}
-.chart:hover .chart-zoom-cue {
-  opacity: 0.88;
-  transform: translateY(0);
-}
-.chart.is-zoom-active .chart-zoom-cue {
-  opacity: 1;
-  transform: translateY(0);
-  background: rgba(14, 165, 233, 0.18);
-  border-color: rgba(56, 189, 248, 0.65);
-  color: #e0f2fe;
-}
-@media (max-width: 700px) {
-  .chart-zoom-cue { display: none; }
 }
 .js-plotly-plot .hoverlayer .hovertext,
 .js-plotly-plot .hoverlayer .legend {
@@ -2925,13 +2861,7 @@ _LIVE_SCRIPT = """
   function setChartZoomState(chartBox, active) {
     if (!chartBox) return;
     const gd = chartBox.querySelector('.js-plotly-plot');
-    const cue = chartBox.querySelector('[data-zoom-cue]');
     chartBox.classList.toggle('is-zoom-active', Boolean(active));
-    if (cue) {
-      cue.textContent = active
-        ? 'Wheel zoom active · Esc to exit'
-        : 'Click chart to enable wheel zoom';
-    }
     if (!gd || !window.Plotly || !gd._fullLayout) return;
 
     if (!gd.__initialAxisState) {
@@ -2960,7 +2890,7 @@ _LIVE_SCRIPT = """
       xaxis: nextX,
       yaxis: nextY
     });
-    window.Plotly.react(gd, gd.data, nextLayout, nextCtx);
+    gd.__zoomUpdate = window.Plotly.react(gd, gd.data, nextLayout, nextCtx);
   }
 
   function deactivateActiveChart() {
@@ -2968,6 +2898,20 @@ _LIVE_SCRIPT = """
     const prev = activeZoomChart;
     activeZoomChart = null;
     setChartZoomState(prev, false);
+  }
+
+  function chartResetSettings(layout) {
+    const settings = {};
+    for (const key of ['xaxis', 'yaxis']) {
+      const axis = layout[key] || {};
+      if (axis.range && (axis.autorange === false || axis.autorange === undefined)) {
+        settings[key + '.autorange'] = false;
+        settings[key + '.range'] = axis.range.slice();
+      } else {
+        settings[key + '.autorange'] = axis.autorange || true;
+      }
+    }
+    return settings;
   }
 
   function activateSection(sectionId) {
@@ -3190,7 +3134,14 @@ _LIVE_SCRIPT = """
             traces.push(...extra);
           }
           const nextCtx = Object.assign({}, gd._context || {}, { scrollZoom: isZoomOn });
-          await window.Plotly.react(gd, traces, Object.assign({}, figure.layout, {width: null, autosize: true}), nextCtx);
+          const nextLayout = Object.assign({}, figure.layout, {width: null, autosize: true});
+          gd.__resetView = chartResetSettings(nextLayout);
+          if (isZoomOn && nextLayout.xaxis && nextLayout.yaxis) {
+            nextLayout.xaxis.fixedrange = false;
+            nextLayout.yaxis.fixedrange = false;
+            nextLayout.dragmode = nextLayout.dragmode || 'zoom';
+          }
+          await window.Plotly.react(gd, traces, nextLayout, nextCtx);
         }
         for (const custom of payload.custom_benchmarks || []) {
           const btn = document.querySelector('[data-bench-key="' + custom.key + '"]');
@@ -3315,6 +3266,9 @@ _LIVE_SCRIPT = """
     decorateTableSemantics(document);
     enableTableSorting(document);
     setupCollapsibleTables(document);
+    document.querySelectorAll('.js-plotly-plot').forEach(function(gd) {
+      if (gd.layout) gd.__resetView = chartResetSettings(gd.layout);
+    });
 
     // Block accidental mouse-wheel zoom on inactive charts while allowing native page scroll
     document.addEventListener('wheel', function(e) {
@@ -3336,6 +3290,21 @@ _LIVE_SCRIPT = """
         }
       } else if (activeZoomChart && (!chartBox || !inControls)) {
         deactivateActiveChart();
+      }
+    });
+
+    // Double-clicking report space restores each visible chart's current data scope.
+    document.addEventListener('dblclick', async function(e) {
+      if (e.target.closest('.js-plotly-plot, button, a, input, select, summary, table')) return;
+      deactivateActiveChart();
+      hideHoverCard();
+      for (const gd of document.querySelectorAll('.js-plotly-plot')) {
+        if (!gd.offsetWidth || !gd.offsetHeight || !gd._fullLayout?.xaxis) continue;
+        await gd.__zoomUpdate;
+        await Plotly.relayout(gd, gd.__resetView);
+        gd.closest('.chart').querySelectorAll('[data-chart-range].active').forEach(
+          button => button.classList.remove('active')
+        );
       }
     });
 
@@ -3683,9 +3652,6 @@ _LIVE_SCRIPT = """
         if (!button || !gd || !window.Plotly) return;
         if (button.hasAttribute('data-chart-export')) {
           await Plotly.downloadImage(gd, {format:'png', filename:controls.dataset.chartTarget, scale:2});
-        } else if (button.hasAttribute('data-chart-reset')) {
-          await Plotly.relayout(gd, {'xaxis.autorange':true, 'yaxis.autorange':true});
-          controls.querySelectorAll('[data-chart-range]').forEach(b => b.classList.remove('active'));
         } else if (button.hasAttribute('data-chart-range')) {
           const dates = Array.from(gd.data[0].x || []).map(x => new Date(x)).filter(x => !isNaN(x));
           if (!dates.length) return;
@@ -4283,13 +4249,6 @@ _LIVE_SCRIPT = """
       }
 
       // Render Deposit Operations inspection table
-      const opsSub = document.getElementById('dep-ops-sub');
-      if (opsSub) {
-        opsSub.textContent = (
-          'Showing ' + inspectedOps.length + ' inbound deposit' + (inspectedOps.length === 1 ? '' : 's') +
-          ' (' + fmtNum(inspectedTotal, 2) + ' ' + curr + ') for ' + yearsLabel + ' · ' + monthScopeLabel + '.'
-        );
-      }
       const opsWrap = document.getElementById('deposits-ops-wrap');
       if (opsWrap) {
         if (inspectedOps.length === 0) {
@@ -4381,24 +4340,13 @@ _LIVE_SCRIPT = """
           hoverTemplate = '<b>%{customdata[1]}</b> (%{x})<br>Deposited: <b>%{y:,.2f} ' + curr + '</b><br>Operations: <b>%{customdata[2]}</b><extra></extra>';
         }
 
-        const headingBox = gd.closest('.chart') ? gd.closest('.chart').querySelector('.chart-heading') : null;
-        if (headingBox) {
-          const modeTxt = depGrouping === 'calendar'
-            ? 'Calendar months summed across ' + yearsLabel
-            : 'Chronological monthly deposits (' + yearsLabel + ') · click any bar to inspect';
-          headingBox.innerHTML = (
-            '<h3>Monthly deposited capital (' + escHtml(curr) + ')</h3>' +
-            '<p>' + escHtml(modeTxt) + ' | Total: ' + fmtNum(yearScopeTotal, 2) + ' ' + escHtml(curr) +
-            ' | Deposits: ' + yearOps.length + '</p>'
-          );
-        }
-
         const maxBarVal = yVals.length ? Math.max.apply(null, yVals) : 0;
         const yTop = maxBarVal > 0 ? maxBarVal * 1.16 : 100;
+        const fixed = !gd.closest('.chart').classList.contains('is-zoom-active');
         const baseYAxis = Object.assign({}, (gd.layout && gd.layout.yaxis) || {});
         delete baseYAxis.autorange;
         baseYAxis.range = [0, yTop];
-        baseYAxis.fixedrange = true;
+        baseYAxis.fixedrange = fixed;
 
         const baseXAxis = Object.assign({}, (gd.layout && gd.layout.xaxis) || {});
         delete baseXAxis.range;
@@ -4406,7 +4354,7 @@ _LIVE_SCRIPT = """
         baseXAxis.type = 'category';
         baseXAxis.tickangle = (depGrouping === 'timeline' && xVals.length > 18) ? -35 : 0;
         baseXAxis.nticks = depGrouping === 'calendar' ? 12 : 14;
-        baseXAxis.fixedrange = true;
+        baseXAxis.fixedrange = fixed;
 
         const nextLayout = Object.assign({}, gd.layout || {}, {
           width: null,
@@ -4416,7 +4364,8 @@ _LIVE_SCRIPT = """
           xaxis: baseXAxis,
           yaxis: baseYAxis
         });
-        window.Plotly.react(
+        gd.__resetView = chartResetSettings(nextLayout);
+        gd.__zoomUpdate = window.Plotly.react(
           gd,
           [{
             type: 'bar',
@@ -5004,7 +4953,6 @@ def render_html_report(data: ReportData) -> str:
         "<section id='overview' class='tab-panel active' role='tabpanel'>"
         "<div class='panel-block' id='overview-kpis'>"
         "<h2>Portfolio overview</h2>"
-        "<p class='section-desc'>Hover or click any <b>i</b> badge to view plain-English metric definitions, examples, and benchmarks.</p>"
         f"<div id='live-kpi'>{_kpi_section(data)}</div>"
         "</div>"
         "<div class='panel-block' id='nav-history'>"
@@ -5012,7 +4960,6 @@ def render_html_report(data: ReportData) -> str:
         "</div>"
         "<div class='panel-block' id='risk-monthly'>"
         "<h2>Risk and monthly TWR returns</h2>"
-        "<p class='section-desc'>Volatility, Sharpe, Sortino, alpha, beta, trade statistics, and a monthly return heatmap.</p>"
         f"<div id='live-risk'>{_risk_cards_html(data.risk, data.trade_stats)}</div>"
         f"{_chart(plot_monthly_returns_heatmap(data.twr_returns, data.currency), plot_id='chart-monthly')}"
         "</div>"
@@ -5051,8 +4998,6 @@ def render_html_report(data: ReportData) -> str:
         "<section id='holdings' class='tab-panel' role='tabpanel'>"
         "<div class='panel-block'>"
         "<h2>Company profit and loss (ranked by total profit and loss)</h2>"
-        "<p class='section-desc'>Open and closed positions ranked "
-        "from highest profit to largest loss.</p>"
         f"{_chart(plot_company_pnl(data.company_pnl, data.currency), plot_id='chart-pnl')}"
         "<div class='interactive-toolbar'>"
         "<div class='filter-group'>"
@@ -5068,7 +5013,6 @@ def render_html_report(data: ReportData) -> str:
         "</div>"
         "<div class='panel-block'>"
         "<h2>Asset allocation</h2>"
-        "<p class='section-desc'>Holdings, currencies, and sectors as shares of invested assets; cash excluded.</p>"
         f"{_chart(plot_holdings_allocation(data.positions), plot_id='chart-holdings')}"
         "<div class='chart-grid'>"
         f"{_chart(plot_currency_allocation(data.positions), plot_id='chart-currency')}"
@@ -5082,19 +5026,15 @@ def render_html_report(data: ReportData) -> str:
     panel_costs = (
         "<section id='costs' class='tab-panel' role='tabpanel'>"
         "<div class='panel-block'>"
-        "<h2>Estimated FX conversion costs</h2>"
-        "<p class='section-desc'>Assumes a 0.5% fee on external currency conversions. The export does not verify "
-        "the actual fee. Costs already reflected in NAV are not deducted again.</p>"
+        "<h2>Estimated FX conversion costs (0.5% assumption)</h2>"
         f"<div id='live-conversion'>{_conversion_summary_section(data.conversion_stats, data.conversion_losses)}</div>"
         "</div>"
         "<div class='panel-block'>"
         "<h2>FX attribution: investment and currency</h2>"
-        "<p class='section-desc'>PLN gains split between investment performance and currency exposure.</p>"
         f"<div id='live-attribution'>{_attribution_section(data.attribution)}</div>"
         "</div>"
         "<div class='panel-block'>"
         "<h2>Dividends and interest</h2>"
-        "<p class='section-desc'>Dividends, interest, and withholding taxes by account currency.</p>"
         f"<div id='live-income'>{_income_table(data.income)}</div>"
         "</div>"
         "</section>"

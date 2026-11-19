@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 import pandas as pd
 import plotly.graph_objects as go
+import plotly.io as pio
 from plotly.subplots import make_subplots
 
 from xtb_analyzer.attribution import FxAttribution
@@ -19,13 +20,16 @@ CHART_COLORS = {
     "benchmark_sox": "#22d3ee",
     "gain": "#34d399",
     "loss": "#f87171",
-    "grid": "rgba(148, 163, 184, 0.14)",
     "text": "#e2e8f0",
     "muted": "#94a3b8",
 }
 
+CHART_TEMPLATE = go.layout.Template(pio.templates["plotly_dark"])
+CHART_TEMPLATE.layout.xaxis.showgrid = False
+CHART_TEMPLATE.layout.yaxis.showgrid = False
+
 CHART_LAYOUT = dict(
-    template="plotly_dark",
+    template=CHART_TEMPLATE,
     font=dict(
         family="'Plus Jakarta Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif",
         size=13,
@@ -101,13 +105,12 @@ def _to_datetime_list(index: pd.Index) -> list:
 
 def _apply_axis_style(fig: go.Figure, max_ticks: int = 12) -> go.Figure:
     fig.update_xaxes(
-        showgrid=True,
-        gridcolor=CHART_COLORS["grid"],
+        showgrid=False,
         tickangle=-45,
         tickformat="%Y-%m-%d",
         nticks=max_ticks,
     )
-    fig.update_yaxes(showgrid=True, gridcolor=CHART_COLORS["grid"])
+    fig.update_yaxes(showgrid=False)
     return fig
 
 
@@ -249,8 +252,7 @@ def _comparison_subtitle(data: ReturnComparisonData, visible: dict[str, bool]) -
 def _style_return_comparison_axes(fig: go.Figure, point_count: int) -> None:
     fig.update_xaxes(
         type="date",
-        showgrid=True,
-        gridcolor="rgba(100, 116, 139, 0.25)",
+        showgrid=False,
         tickmode="auto",
         hoverformat="%d %b %Y",
         showspikes=True,
@@ -271,8 +273,7 @@ def _style_return_comparison_axes(fig: go.Figure, point_count: int) -> None:
         mirror=False,
     )
     fig.update_yaxes(
-        showgrid=True,
-        gridcolor="rgba(100, 116, 139, 0.25)",
+        showgrid=False,
         ticksuffix="%",
         tickformat=".0f",
         zeroline=True,
@@ -456,13 +457,6 @@ def plot_nav_with_deposits(nav: pd.DataFrame, currency: str = "pln") -> go.Figur
         )
     )
 
-    deposits = view[dep_col].diff().fillna(view[dep_col])
-    deposit_days = view.index[deposits > 0]
-    # Dense funding histories would otherwise obscure the price path.
-    marker_step = max(1, (len(deposit_days) + 11) // 12)
-    for day in deposit_days[::marker_step]:
-        fig.add_vline(x=day, line_width=1, line_dash="dot", line_color="#64748b", opacity=0.4)
-
     fig.update_layout(
         **CHART_LAYOUT,
         title=dict(
@@ -589,8 +583,8 @@ def plot_return_dashboard(nav: pd.DataFrame, currency: str = "pln") -> go.Figure
         margin=dict(l=60, r=40, t=100, b=80),
     )
     fig.update_layout(**layout)
-    fig.update_yaxes(title_text="Return (%)", row=1, col=2, gridcolor=CHART_COLORS["grid"])
-    fig.update_xaxes(tickangle=-45, nticks=10, row=1, col=2, gridcolor=CHART_COLORS["grid"])
+    fig.update_yaxes(title_text="Return (%)", row=1, col=2)
+    fig.update_xaxes(tickangle=-45, nticks=10, row=1, col=2)
     return fig
 
 
@@ -671,12 +665,11 @@ def plot_conversion_losses(losses: pd.DataFrame, summary: dict[str, float]) -> g
                 title="Cumulative cost",
                 overlaying="y",
                 side="right",
-                gridcolor=CHART_COLORS["grid"],
             ),
         }
     )
-    fig.update_yaxes(title_text="PLN", row=1, col=1, gridcolor=CHART_COLORS["grid"])
-    fig.update_xaxes(tickangle=-45, nticks=8, row=1, col=1, gridcolor=CHART_COLORS["grid"])
+    fig.update_yaxes(title_text="PLN", row=1, col=1)
+    fig.update_xaxes(tickangle=-45, nticks=8, row=1, col=1)
     return fig
 
 
@@ -735,7 +728,6 @@ def plot_return_measures(measures: ReturnMeasures) -> go.Figure:
         range=y_range,
         zeroline=True,
         zerolinecolor="rgba(148, 163, 184, 0.5)",
-        gridcolor=CHART_COLORS["grid"],
         ticksuffix="%",
     )
     fig.update_xaxes(tickfont=dict(size=14))
@@ -833,7 +825,7 @@ def plot_fx_attribution_waterfall(attribution: FxAttribution) -> go.Figure:
             "showlegend": False,
         }
     )
-    fig.update_yaxes(gridcolor=CHART_COLORS["grid"], tickformat=",.0f")
+    fig.update_yaxes(tickformat=",.0f")
     return fig
 
 
@@ -949,7 +941,6 @@ def plot_holdings_allocation(positions: pd.DataFrame, top_n: int = 10) -> go.Fig
             "xaxis": dict(
                 title="Share of invested assets (%)",
                 range=[0, max(weights.max() * 1.35, 10)],
-                gridcolor=CHART_COLORS["grid"],
                 ticksuffix="%",
                 zeroline=False,
             ),
@@ -1112,7 +1103,6 @@ def plot_company_pnl(company_pnl: pd.DataFrame, currency: str = "pln") -> go.Fig
             "xaxis": dict(
                 title=f"Total profit / loss ({curr_label}) – realized + unrealized",
                 range=[left_pad, right_pad],
-                gridcolor=CHART_COLORS["grid"],
                 zeroline=True,
                 zerolinecolor="rgba(148, 163, 184, 0.55)",
                 zerolinewidth=1.5,
@@ -1208,7 +1198,6 @@ def plot_monthly_deposits(
             "margin": dict(l=68, r=32, t=88, b=68),
             "yaxis": dict(
                 title=f"Deposited ({curr_label})",
-                gridcolor=CHART_COLORS["grid"],
                 tickformat=",.0f",
                 zeroline=True,
                 zerolinecolor="rgba(148, 163, 184, 0.45)",
@@ -1218,7 +1207,6 @@ def plot_monthly_deposits(
                 type="category",
                 tickangle=-35 if not by_calendar_month and len(x_vals) > 18 else 0,
                 nticks=14 if not by_calendar_month else 12,
-                gridcolor="rgba(148, 163, 184, 0.08)",
             ),
         }
     )

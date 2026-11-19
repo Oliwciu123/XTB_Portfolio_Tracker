@@ -75,7 +75,7 @@ def test_guides_reconcile_with_dashboard_cards(tmp_path: Path):
 
 
 def test_version_is_1_3_0():
-    assert __version__ == "1.3.0"
+    assert __version__ == "1.3.1"
 
 
 def test_app_icon_has_required_sizes():

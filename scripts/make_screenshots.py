@@ -190,7 +190,7 @@ def capture_report(
                 return !x.autorange && Math.abs((new Date(x.range[1])-new Date(x.range[0]))/86400000-7)<.01;
             }"""
         )
-        controls.locator("[data-chart-reset]").click()
+        page.locator("#overview-kpis h2").dblclick()
         settled(page)
         page.mouse.move(2, 2)
         page.evaluate("window.scrollTo(0, 0)")
@@ -387,7 +387,7 @@ def main() -> None:
     parser.add_argument(
         "--desktop-exe", type=Path, help="Use a packaged executable for native captures."
     )
-    parser.add_argument("--media-dir", type=Path, help="Also write the v1.3.0 review shots here.")
+    parser.add_argument("--media-dir", type=Path, help="Also write the report review shots here.")
     parser.add_argument(
         "--formula-dir", type=Path, help="Write one formula screenshot per indicator and width."
     )
